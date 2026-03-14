@@ -1,0 +1,219 @@
+{
+  "id": "cms-default-creds-to-root",
+  "title": "CMS Default Creds to Root",
+  "category": "linux-standalone",
+  "source": ["HTB BoardLight", "HTB Dog", "HTB October"],
+  "designed_by": "ai-composite",
+  "description": "Three Linux standalone machines demonstrating CMS default credentials exploitation. BoardLight: Dolibarr admin:admin → PHP RCE → SUID enlightenment_sys CVE-2022-37706. Dog: Backdrop CMS → git-dumper → admin creds → PHP module RCE → sudo git apply. October: October CMS → PHP upload → www-data → kernel exploit / SUID overflow.",
+
+  "introduction": "CMS default creds (admin:admin) are common OSCP footholds—always try them before spending time on brute force.",
+  "mental_model": "Default creds unlock admin panels; admin panels often have RCE (plugins, modules, upload). Chain to linpeas.",
+  "key_principles": [
+    "Try admin:admin and admin:password on every CMS",
+    "searchsploit after CMS identification",
+    "linpeas finds SUID and kernel exploits",
+    "sudo git apply can write arbitrary files",
+    "CVE-2022-37706 targets enlightenment_sys SUID"
+  ],
+
+  "indicators": {
+    "difficulty": 3,
+    "cognitive_load": 2,
+    "enumeration_depth": 3,
+    "rabbit_hole_risk": 2,
+    "time_pressure": 2
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1078.001", "name": "Default Accounts"},
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1547.006", "name": "Kernel Extensions"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1552.001", "name": "Credentials In Files"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T5-Credentials"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 0, "linux": 3},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "dolibarr", "backdrop-cms", "october-cms", "git-dumper", "linpeas",
+    "CVE-2022-37706", "enlightenment_sys", "SUID", "php-rce", "default-creds",
+    "nmap", "gobuster", "feroxbuster", "searchsploit", "git-apply"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 1
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.11.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "boardlight",
+      "label": "BOARDLIGHT",
+      "ip": "10.10.11.11",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (Dolibarr)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "default-creds", "summary": "Dolibarr admin:admin default credentials", "leads_to": "php-rce"}
+          ],
+          "commands": [
+            "nmap -sV -sC 10.10.11.11",
+            "curl -s http://10.10.11.11 | grep -i dolibarr",
+            "# Login admin:admin at /index.php",
+            "searchsploit dolibarr"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data",
+          "to": "root",
+          "technique": "SUID enlightenment_sys CVE-2022-37706",
+          "commands": [
+            "linpeas.sh",
+            "find / -perm -4000 -type f 2>/dev/null",
+            {"cmd": "searchsploit -m 2022-37706", "rationale": "Why: SUID binary may have known exploit"},
+            "gcc 2022-37706.c -o exploit",
+            {"cmd": "./exploit", "rationale": "Why: CVE-2022-37706 elevates via enlightenment_sys"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "admin", "type": "password", "source": "Dolibarr default admin:admin", "unlocks": ["boardlight-web"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "dog",
+      "label": "DOG",
+      "ip": "10.10.11.58",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (Backdrop CMS)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": ".git exposed → git-dumper → settings.php admin creds", "leads_to": "cms-admin"},
+            {"type": "rce", "summary": "Backdrop PHP module RCE with admin creds", "leads_to": "www-data"}
+          ],
+          "commands": [
+            {"cmd": "git-dumper http://10.10.11.58/.git ./dog-git", "rationale": "Why: Recover config files with admin creds"},
+            "cat dog-git/sites/default/settings.php | grep -A2 'database'",
+            "# Extract admin creds, login to Backdrop",
+            "searchsploit backdrop"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data",
+          "to": "root",
+          "technique": "sudo git apply (arbitrary file write)",
+          "commands": [
+            "sudo -l",
+            "# Create malicious patch that adds root to /etc/passwd or writes SSH key",
+            "echo 'diff --git a/x b/x' > privesc.patch",
+            {"cmd": "sudo git apply privesc.patch", "rationale": "Why: Writes arbitrary files as root for privesc"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "admin", "type": "password", "source": "git-dumper → settings.php", "unlocks": ["dog-cms"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "october",
+      "label": "OCTOBER",
+      "ip": "10.10.10.16",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (October CMS)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "upload", "summary": "October CMS PHP file upload bypass", "leads_to": "www-data"}
+          ],
+          "commands": [
+            "nmap -sV 10.10.10.16",
+            "gobuster dir -u http://10.10.10.16 -w /usr/share/wordlists/dirb/common.txt",
+            "searchsploit october cms"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data",
+          "to": "root",
+          "technique": "Kernel exploit or SUID binary overflow",
+          "commands": [
+            "uname -a",
+            "searchsploit linux kernel",
+            "# Or: find SUID with overflow, exploit",
+            "linpeas.sh"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-boardlight",
+      "name": "BoardLight (Dolibarr → CVE-2022-37706)",
+      "color": "#6bb8cc",
+      "steps": ["boardlight"],
+      "description": "Dolibarr admin:admin → PHP RCE → linpeas → SUID enlightenment_sys CVE-2022-37706 → root"
+    },
+    {
+      "id": "path-dog",
+      "name": "Dog (Backdrop → git apply)",
+      "color": "#e8a87c",
+      "steps": ["dog"],
+      "description": "git-dumper → settings.php → admin creds → PHP module RCE → sudo git apply → root"
+    },
+    {
+      "id": "path-october",
+      "name": "October (PHP upload → kernel/SUID)",
+      "color": "#85e89d",
+      "steps": ["october"],
+      "description": "October CMS PHP upload → www-data → kernel exploit / SUID overflow → root"
+    }
+  ]
+}

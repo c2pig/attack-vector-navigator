@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OSCP Attack Path Simulator</title>
+<link rel="stylesheet" href="simulator.css">
+</head>
+<body>
+
+<div class="landing-header">
+  <h1>ATTACK PATH SIMULATOR</h1>
+  <p>Navigate TTP scenarios across 3 levels: Topology → Machine → Procedure</p>
+</div>
+
+<div class="landing-search">
+  <input type="text" id="landing-search" placeholder="Search across all scenarios: ssh, kerberoasting, CVE-2020-13151, mimikatz..." autocomplete="off">
+</div>
+
+<div class="category-tabs" id="category-tabs">
+  <button class="cat-tab active" data-cat="all">ALL</button>
+  <button class="cat-tab" data-cat="exam-format">EXAM FORMAT</button>
+  <button class="cat-tab" data-cat="ad-chain">AD CHAIN</button>
+  <button class="cat-tab" data-cat="linux-standalone">LINUX</button>
+  <button class="cat-tab" data-cat="windows-standalone">WINDOWS</button>
+  <button class="cat-tab" data-cat="multi-vector">MULTI-VECTOR</button>
+  <button class="cat-tab" data-cat="service-drill">SERVICE DRILL</button>
+  <button class="cat-tab" data-cat="technique-drill">TECHNIQUE DRILL</button>
+  <button class="cat-tab" data-cat="exam-simulation">EXAM SIM</button>
+  <button class="cat-tab" data-cat="edge-case">EDGE CASE</button>
+</div>
+
+<div class="scenario-grid" id="scenario-grid"></div>
+
+<div id="copy-toast">COPIED</div>
+
+<script>
+const SCENARIO_MANIFEST = [
+  { id:"credential-relay-chain", title:"Credential Relay Chain", category:"exam-format", source:"OSCP A", designed_by:"lab-derived", description:"Given creds → token impersonation → lsassy dump → PtH pivot → windows.old SAM → Domain Admin. 3 standalone CVE boxes.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:3,rabbit_hole_risk:3,time_pressure:5}, env:{machines:6,networks:2,win:4,lin:2,ad:true,pivot:true}, tags:["evil-winrm","printspoofer","lsassy","ligolo-ng","pass-the-hash","CVE-2020-13151","zip2john","putty-registry"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,13,16,17,18,19], freq:"high", order:3 },
+  { id:"kerberoast-to-domain-admin", title:"Kerberoast to Domain Admin", category:"exam-format", source:"OSCP B", designed_by:"lab-derived", description:"Given creds → Kerberoasting → MSSQL xp_cmdshell → PrintSpoofer → Mimikatz → DA hash. Standalone: SNMP, Text4Shell, FreeSWITCH.", indicators:{difficulty:6,cognitive_load:5,enumeration_depth:4,rabbit_hole_risk:3,time_pressure:5}, env:{machines:6,networks:2,win:4,lin:2,ad:true,pivot:true}, tags:["kerberoasting","xp_cmdshell","godpotato","mimikatz","text4shell","jdwp","freeswtich","snmp"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,13,16,17,18,22], freq:"high", order:4 },
+  { id:"password-reuse-cascade", title:"Password Reuse Cascade", category:"exam-format", source:"OSCP C", designed_by:"lab-derived", description:"Binary hash leak → PS history mining → password spray → lsassy → DA. Standalone: Mobile Mouse, VestaCP, Usermin + tar wildcard.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:4,rabbit_hole_risk:4,time_pressure:5}, env:{machines:6,networks:2,win:4,lin:2,ad:true,pivot:true}, tags:["admintool","ps-history","password-spray","mobile-mouse","vestacp","usermin","tar-wildcard","snmp","exiftool"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,13,16,17,18,22], freq:"high", order:5 },
+
+  { id:"assume-breach-config-chain", title:"Assume Breach: Config File Chain", category:"ad-chain", source:"Secura", designed_by:"lab-derived", description:"Given creds → lsassy/RDCMan → MySQL dump → PtH → PrintSpoofer on DC. Pure AD, single subnet.", indicators:{difficulty:3,cognitive_load:2,enumeration_depth:2,rabbit_hole_risk:2,time_pressure:2}, env:{machines:3,networks:1,win:3,lin:0,ad:true,pivot:false}, tags:["evil-winrm","lsassy","rdcman","mysql","pass-the-hash","printspoofer","sweetpotato","gpo-abuse"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,16,17,24], freq:"high", order:1 },
+  { id:"sqli-to-domain-dominance", title:"SQLi to Domain Dominance", category:"ad-chain", source:"Medtech", designed_by:"lab-derived", description:"SQLi → xp_cmdshell → Mimikatz → service hijack → credential spray → psexec sweep → DA.", indicators:{difficulty:6,cognitive_load:6,enumeration_depth:4,rabbit_hole_risk:4,time_pressure:7}, env:{machines:10,networks:2,win:8,lin:2,ad:true,pivot:true}, tags:["sqli","xp_cmdshell","mimikatz","service-hijack","credential-spray","psexec","ligolo-ng","openvpn-gtfobins"], mitre:["TA0001","TA0003","TA0004","TA0006","TA0007","TA0008"], pen200:[6,8,13,16,17,18,19,24], freq:"high", order:2 },
+  { id:"fan-out-convergence", title:"Fan-Out Convergence", category:"ad-chain", source:"Relia", designed_by:"lab-derived", description:"Multiple entry points → phishing (Library-ms) → KeePass → PS transcripts → psexec sweep. 16 machines, branching paths.", indicators:{difficulty:8,cognitive_load:9,enumeration_depth:7,rabbit_hole_risk:7,time_pressure:10}, env:{machines:16,networks:2,win:12,lin:4,ad:true,pivot:true}, tags:["phishing","library-ms","webdav","kerberoasting","keepass","ps-transcripts","psexec","ritecms","umbraco","dnn","ssh2john"], mitre:["TA0001","TA0002","TA0003","TA0004","TA0006","TA0007","TA0008"], pen200:[6,8,13,16,17,18,19,22,24], freq:"medium", order:10 },
+  { id:"ad-permission-gauntlet", title:"AD Permission Gauntlet", category:"ad-chain", source:"HTB Administrator", designed_by:"lab-derived", description:"GenericAll → ForceChangePassword → Password Safe → Targeted Kerberoast → DCSync. Pure BloodHound-driven chain.", indicators:{difficulty:6,cognitive_load:7,enumeration_depth:3,rabbit_hole_risk:2,time_pressure:4}, env:{machines:1,networks:1,win:1,lin:0,ad:true,pivot:false}, tags:["genericall","forcechangepassword","password-safe","targeted-kerberoast","dcsync","bloodhound"], mitre:["TA0004","TA0006","TA0008"], pen200:[16,22,24], freq:"medium", order:8 },
+  { id:"adcs-escalation-path", title:"ADCS Escalation Path", category:"ad-chain", source:"HTB Manager + Authority + EscapeTwo", designed_by:"ai-composite", description:"MSSQL → xp_dirtree → ADCS ESC1/ESC4/ESC7. Combines three HTB labs into one ADCS-focused chain.", indicators:{difficulty:7,cognitive_load:7,enumeration_depth:5,rabbit_hole_risk:3,time_pressure:6}, env:{machines:3,networks:1,win:3,lin:0,ad:true,pivot:false}, tags:["adcs","esc1","esc4","esc7","certipy","mssql","xp_dirtree","ansible-vault","pwm"], mitre:["TA0004","TA0006","TA0008"], pen200:[16,22,24], freq:"medium", order:11 },
+  { id:"shadow-credential-relay", title:"Shadow Credential Relay", category:"ad-chain", source:"HTB Certified + Fluffy", designed_by:"ai-composite", description:"WriteOwner → Shadow Credentials → ADCS ESC9/ESC16. Advanced AD permission abuse with certificate attacks.", indicators:{difficulty:8,cognitive_load:8,enumeration_depth:4,rabbit_hole_risk:3,time_pressure:6}, env:{machines:2,networks:1,win:2,lin:0,ad:true,pivot:false}, tags:["writeowner","shadow-credentials","certipy","adcs","esc9","esc16","bloodyad","dacledit","responder","ntlmv2"], mitre:["TA0004","TA0006","TA0008"], pen200:[22,24], freq:"medium", order:12 },
+  { id:"gmsa-delegation-abuse", title:"GMSA and Delegation Abuse", category:"ad-chain", source:"HTB TombWatcher + Vintage + Rebound", designed_by:"ai-composite", description:"Targeted Kerberoast → GMSA read → RBCD → DCSync. Advanced AD with delegation and service account abuse.", indicators:{difficulty:9,cognitive_load:9,enumeration_depth:5,rabbit_hole_risk:4,time_pressure:8}, env:{machines:3,networks:1,win:3,lin:0,ad:true,pivot:false}, tags:["targeted-kerberoast","gmsa","rbcd","constrained-delegation","dcsync","shadow-credentials","ad-recycle-bin","adcs","esc15"], mitre:["TA0004","TA0006","TA0008"], pen200:[22,24], freq:"low", order:15 },
+
+  { id:"cms-default-creds-to-root", title:"CMS Default Creds to Root", category:"linux-standalone", source:"HTB BoardLight + Dog + October", designed_by:"ai-composite", description:"Default admin creds → CMS RCE → password reuse → SUID/sudo → root. Classic CMS exploitation chain.", indicators:{difficulty:3,cognitive_load:2,enumeration_depth:3,rabbit_hole_risk:2,time_pressure:2}, env:{machines:3,networks:1,win:0,lin:3,ad:false,pivot:false}, tags:["dolibarr","backdrop","october-cms","default-creds","suid","sudo","git-dumper","password-reuse"], mitre:["TA0001","TA0004","TA0006"], pen200:[8,13,18], freq:"high", order:6 },
+  { id:"ssrf-to-internal-api", title:"SSRF to Internal API", category:"linux-standalone", source:"HTB Editorial", designed_by:"lab-derived", description:"SSRF port scan → internal API creds → git history mining → sudo CVE (GitPython).", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:5,rabbit_hole_risk:3,time_pressure:3}, env:{machines:1,networks:1,win:0,lin:1,ad:false,pivot:false}, tags:["ssrf","internal-api","git-mining","gitpython","CVE-2022-24439","sudo"], mitre:["TA0001","TA0004","TA0006"], pen200:[8,13,18], freq:"medium", order:7 },
+  { id:"snmp-credential-harvest", title:"SNMP Credential Harvest", category:"linux-standalone", source:"HTB Monitored + OSCP C Frankfurt", designed_by:"ai-composite", description:"SNMP extended MIB → credential leak → web panel RCE → sudo binary replacement.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:6,rabbit_hole_risk:3,time_pressure:3}, env:{machines:2,networks:1,win:0,lin:2,ad:false,pivot:false}, tags:["snmp","snmpwalk","nagios","vestacp","hydra","community-string","sudo-binary-replace"], mitre:["TA0001","TA0004","TA0006"], pen200:[6,8,13,18], freq:"high", order:7 },
+  { id:"git-repo-mining-chain", title:"Git Repo Mining Chain", category:"linux-standalone", source:"HTB Dog + LinkVortex + OSCP A Crystal", designed_by:"ai-composite", description:"Exposed .git → credential extraction → SSH → archive crack → config → root.", indicators:{difficulty:4,cognitive_load:4,enumeration_depth:4,rabbit_hole_risk:3,time_pressure:3}, env:{machines:3,networks:1,win:0,lin:3,ad:false,pivot:false}, tags:["git-dumper","git-log","ghost-cms","CVE-2023-40028","zip2john","joomla","toctou","symlink-race"], mitre:["TA0001","TA0004","TA0006"], pen200:[6,13,16,18], freq:"high", order:6 },
+  { id:"cron-job-exploitation", title:"Cron Job Exploitation", category:"linux-standalone", source:"OSCP A Aero + OSCP C Charlie", designed_by:"ai-composite", description:"CVE RCE → pspy → writable cron binary / tar wildcard injection → root.", indicators:{difficulty:5,cognitive_load:3,enumeration_depth:3,rabbit_hole_risk:2,time_pressure:3}, env:{machines:2,networks:1,win:0,lin:2,ad:false,pivot:false}, tags:["pspy","cron","writable-binary","tar-wildcard","aerospike","CVE-2020-13151","usermin","exiftool"], mitre:["TA0001","TA0004","TA0053"], pen200:[13,18], freq:"high", order:6 },
+  { id:"nfs-capability-abuse", title:"NFS and Capability Abuse", category:"linux-standalone", source:"HTB Clicker + Lightweight + Jail", designed_by:"ai-composite", description:"NFS backup → mass assignment → SUID binary → PERL5OPT / capabilities → root.", indicators:{difficulty:6,cognitive_load:6,enumeration_depth:5,rabbit_hole_risk:4,time_pressure:5}, env:{machines:3,networks:1,win:0,lin:3,ad:false,pivot:false}, tags:["nfs","showmount","mass-assignment","suid","perl5opt","capabilities","openssl","7z2john","ldap-sniffing"], mitre:["TA0001","TA0004","TA0006"], pen200:[6,13,16,18], freq:"medium", order:9 },
+
+  { id:"public-cve-unusual-ports", title:"Public CVE on Unusual Ports", category:"windows-standalone", source:"OSCP A Hermes + OSCP C Pascha + HTB Buff", designed_by:"ai-composite", description:"Unknown service on weird port → searchsploit → RCE → service binary hijack / PuTTY registry.", indicators:{difficulty:5,cognitive_load:3,enumeration_depth:5,rabbit_hole_risk:3,time_pressure:3}, env:{machines:3,networks:1,win:3,lin:0,ad:false,pivot:false}, tags:["wifi-mouse","mobile-mouse","cloudme","gym-management","service-hijack","putty-registry","chisel","SeImpersonate"], mitre:["TA0001","TA0004"], pen200:[13,17], freq:"high", order:6 },
+  { id:"iis-upload-bypass", title:"IIS Upload Bypass", category:"windows-standalone", source:"HTB Bounty + Bart", designed_by:"ai-composite", description:"File upload → web.config trick / log poisoning → SeImpersonate → Potato.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:5,rabbit_hole_risk:5,time_pressure:4}, env:{machines:2,networks:1,win:2,lin:0,ad:false,pivot:false}, tags:["iis","web.config","log-poisoning","file-upload","juicypotato","vhost-discovery","winlogon-registry"], mitre:["TA0001","TA0004"], pen200:[8,13,17], freq:"medium", order:8 },
+  { id:"tunnel-and-escalate", title:"Tunnel and Escalate", category:"windows-standalone", source:"HTB Buff + Hawk", designed_by:"ai-composite", description:"Local service on localhost → Chisel tunnel → BOF/H2 RCE → SYSTEM/root.", indicators:{difficulty:6,cognitive_load:5,enumeration_depth:4,rabbit_hole_risk:3,time_pressure:4}, env:{machines:2,networks:1,win:1,lin:1,ad:false,pivot:false}, tags:["chisel","ssh-tunnel","cloudme","h2-database","bof","drupal","openssl-brute","ftp-anonymous"], mitre:["TA0001","TA0004","TA0008"], pen200:[13,17,18,19], freq:"medium", order:9 },
+
+  { id:"phishing-to-pivot", title:"Phishing to Pivot", category:"multi-vector", source:"Relia + HTB Outdated", designed_by:"ai-composite", description:"Library-ms / Folina → client-side shell → shadow credentials → WSUS/psexec sweep.", indicators:{difficulty:8,cognitive_load:8,enumeration_depth:5,rabbit_hole_risk:5,time_pressure:8}, env:{machines:6,networks:2,win:5,lin:1,ad:true,pivot:true}, tags:["phishing","library-ms","folina","CVE-2022-30190","shadow-credentials","wsus","responder","swaks"], mitre:["TA0001","TA0002","TA0004","TA0006","TA0008"], pen200:[16,17,19,22,24], freq:"medium", order:13 },
+  { id:"cross-boundary-pivot", title:"Cross-Boundary Pivot", category:"multi-vector", source:"HTB Cerberus", designed_by:"lab-derived", description:"Web CVE → Linux VM root → SSSD cache → Chisel to Windows host → ManageEngine.", indicators:{difficulty:8,cognitive_load:7,enumeration_depth:5,rabbit_hole_risk:4,time_pressure:7}, env:{machines:2,networks:2,win:1,lin:1,ad:false,pivot:true}, tags:["icingaweb2","firejail","sssd","chisel","manageengine","saml","CVE-2022-24716","CVE-2022-47966"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[13,17,18,19], freq:"low", order:14 },
+
+  { id:"mssql-from-query-to-system", title:"MSSQL: From Query to SYSTEM", category:"service-drill", source:"Medtech + OSCP B + Tally", designed_by:"ai-composite", description:"SQLi → stacked queries → xp_cmdshell → SeImpersonate → Potato. The #1 Windows initial access vector.", indicators:{difficulty:5,cognitive_load:3,enumeration_depth:3,rabbit_hole_risk:2,time_pressure:3}, env:{machines:1,networks:1,win:1,lin:0,ad:false,pivot:false}, tags:["sqli","mssql","xp_cmdshell","stacked-queries","printspoofer","godpotato","SeImpersonate","impacket-mssqlclient"], mitre:["TA0001","TA0004"], pen200:[8,13,17], freq:"high", order:2 },
+  { id:"smb-guest-to-admin", title:"SMB: Guest to Admin", category:"service-drill", source:"HTB Cicada + Relia", designed_by:"ai-composite", description:"Guest shares → credential mining → password spray → PtH → psexec. Full SMB-only chain.", indicators:{difficulty:4,cognitive_load:3,enumeration_depth:4,rabbit_hole_risk:3,time_pressure:3}, env:{machines:2,networks:1,win:2,lin:0,ad:true,pivot:false}, tags:["smb","guest-access","rid-brute","password-spray","ldap-description","backup-operators","reg-save","secretsdump"], mitre:["TA0001","TA0006","TA0008"], pen200:[6,16,22,24], freq:"high", order:3 },
+  { id:"snmp-forgotten-protocol", title:"SNMP: The Forgotten Protocol", category:"service-drill", source:"OSCP A/B/C + HTB Monitored", designed_by:"ai-composite", description:"UDP scan → community string brute → extended MIB → credential leak → service exploitation.", indicators:{difficulty:4,cognitive_load:3,enumeration_depth:7,rabbit_hole_risk:2,time_pressure:3}, env:{machines:2,networks:1,win:1,lin:1,ad:false,pivot:false}, tags:["snmp","snmpwalk","snmpbulkwalk","hydra","community-string","net-snmp-extend","udp-scan"], mitre:["TA0001","TA0006"], pen200:[6,8], freq:"high", order:3 },
+  { id:"wordpress-plugin-to-root", title:"WordPress: Plugin to Root", category:"service-drill", source:"Relia + HTB Brainfuck", designed_by:"ai-composite", description:"wpscan → plugin CVE → auth bypass → webshell → config → password reuse → privesc.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:4,rabbit_hole_risk:4,time_pressure:4}, env:{machines:2,networks:1,win:0,lin:2,ad:false,pivot:false}, tags:["wordpress","wpscan","wp-support-plus","php-filter","drupal","lxd-escape","ssh2john"], mitre:["TA0001","TA0004","TA0006"], pen200:[8,13,18], freq:"medium", order:7 },
+
+  { id:"token-impersonation-gauntlet", title:"Token Impersonation Gauntlet", category:"technique-drill", source:"8+ labs", designed_by:"ai-composite", description:"SeImpersonate with PrintSpoofer, GodPotato, SweetPotato, JuicyPotato, RoguePotato across different Windows versions.", indicators:{difficulty:4,cognitive_load:2,enumeration_depth:1,rabbit_hole_risk:1,time_pressure:2}, env:{machines:5,networks:1,win:5,lin:0,ad:false,pivot:false}, tags:["SeImpersonate","printspoofer","godpotato","sweetpotato","juicypotato","roguepotato","sigmapotato"], mitre:["TA0004"], pen200:[17], freq:"high", order:1 },
+  { id:"password-spray-and-reuse", title:"Password Spray and Reuse", category:"technique-drill", source:"All labs", designed_by:"ai-composite", description:"Given one credential → spray across SMB/WinRM/RDP/SSH/MSSQL/FTP → map which services accept which creds.", indicators:{difficulty:3,cognitive_load:3,enumeration_depth:2,rabbit_hole_risk:3,time_pressure:2}, env:{machines:4,networks:1,win:2,lin:2,ad:true,pivot:false}, tags:["nxc","crackmapexec","hydra","password-spray","password-reuse","evil-winrm","rdp","ssh","mssql","ftp"], mitre:["TA0006","TA0008"], pen200:[16,24], freq:"high", order:1 },
+  { id:"pivot-tunnel-workshop", title:"Pivot and Tunnel Workshop", category:"technique-drill", source:"All AD labs", designed_by:"ai-composite", description:"Ligolo-ng, Chisel, SSH tunneling, iox proxy — same topology, different tools.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:1,rabbit_hole_risk:1,time_pressure:3}, env:{machines:3,networks:2,win:2,lin:1,ad:false,pivot:true}, tags:["ligolo-ng","chisel","ssh-tunnel","iox","socks","proxychains","port-forwarding"], mitre:["TA0008"], pen200:[19], freq:"high", order:2 },
+  { id:"file-transfer-under-pressure", title:"File Transfer Under Pressure", category:"technique-drill", source:"All labs", designed_by:"ai-composite", description:"certutil, PowerShell, SMB server, curl, wget, nc, base64 — Windows and Linux targets with different restrictions.", indicators:{difficulty:3,cognitive_load:2,enumeration_depth:1,rabbit_hole_risk:1,time_pressure:2}, env:{machines:2,networks:1,win:1,lin:1,ad:false,pivot:false}, tags:["certutil","powershell-download","smbserver","curl","wget","nc","base64","python-http-server"], mitre:["TA0005"], pen200:[17,18], freq:"high", order:1 },
+  { id:"credential-hunting-sweep", title:"Credential Hunting Sweep", category:"technique-drill", source:"All labs", designed_by:"ai-composite", description:"Config files, PS history, registry, .git, KeePass, archives, LSASS, SAM, DPAPI — one machine with all sources.", indicators:{difficulty:5,cognitive_load:5,enumeration_depth:3,rabbit_hole_risk:2,time_pressure:3}, env:{machines:2,networks:1,win:1,lin:1,ad:false,pivot:false}, tags:["lsassy","mimikatz","secretsdump","keepass","zip2john","git-mining","ps-history","putty-registry","dpapi","config-files","winpeas","linpeas"], mitre:["TA0006"], pen200:[16,17,18], freq:"high", order:2 },
+
+  { id:"the-quiet-network", title:"The Quiet Network", category:"exam-simulation", source:"AI-designed", designed_by:"ai-composite", description:"All entry points require UDP recon (SNMP, TFTP, DNS zone transfer). Nothing obvious on TCP. Punishes skipping UDP scans.", indicators:{difficulty:6,cognitive_load:5,enumeration_depth:9,rabbit_hole_risk:5,time_pressure:6}, env:{machines:6,networks:2,win:3,lin:3,ad:true,pivot:true}, tags:["udp-scan","snmp","tftp","dns-zone-transfer","nmap-udp"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,8,13,16,17,18], freq:"medium", order:16 },
+  { id:"the-red-herring", title:"The Red Herring", category:"exam-simulation", source:"AI-designed", designed_by:"ai-composite", description:"Multiple decoy services with one real attack path hidden behind vhost discovery or non-standard port.", indicators:{difficulty:6,cognitive_load:6,enumeration_depth:8,rabbit_hole_risk:9,time_pressure:7}, env:{machines:6,networks:2,win:3,lin:3,ad:true,pivot:true}, tags:["vhost-discovery","decoy","iis-default","honeypot","non-standard-port","feroxbuster","ffuf"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,8,13,16,17,18], freq:"medium", order:17 },
+  { id:"the-credential-maze", title:"The Credential Maze", category:"exam-simulation", source:"AI-designed", designed_by:"ai-composite", description:"5 machines, each has one credential unlocking the next — but 3 fake credentials lead to dead ends.", indicators:{difficulty:6,cognitive_load:7,enumeration_depth:4,rabbit_hole_risk:8,time_pressure:6}, env:{machines:5,networks:1,win:3,lin:2,ad:true,pivot:false}, tags:["credential-chain","password-reuse","fake-creds","validation","nxc","evil-winrm"], mitre:["TA0006","TA0007","TA0008"], pen200:[16,17,18,24], freq:"medium", order:18 },
+  { id:"the-clock-is-ticking", title:"The Clock is Ticking", category:"exam-simulation", source:"AI-designed", designed_by:"ai-composite", description:"Exam-format (3 AD + 3 standalone) designed for time management — standalone are quick wins, AD chain is the time sink.", indicators:{difficulty:5,cognitive_load:5,enumeration_depth:4,rabbit_hole_risk:4,time_pressure:9}, env:{machines:6,networks:2,win:4,lin:2,ad:true,pivot:true}, tags:["time-management","triage","quick-wins","exam-strategy"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,13,16,17,18,19,24], freq:"high", order:16 },
+  { id:"the-linux-heavy-exam", title:"The Linux-Heavy Exam", category:"exam-simulation", source:"AI-designed", designed_by:"ai-composite", description:"3 AD (standard) + 3 Linux standalone with diverse privesc: SUID, cron, sudo, capabilities, kernel, Docker/LXD.", indicators:{difficulty:6,cognitive_load:5,enumeration_depth:5,rabbit_hole_risk:4,time_pressure:6}, env:{machines:6,networks:2,win:3,lin:3,ad:true,pivot:true}, tags:["suid","cron","sudo","capabilities","kernel-exploit","docker-escape","lxd-escape"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,13,16,17,18,19,24], freq:"medium", order:17 },
+  { id:"the-windows-heavy-exam", title:"The Windows-Heavy Exam", category:"exam-simulation", source:"AI-designed", designed_by:"ai-composite", description:"3 AD (standard) + 3 Windows standalone with diverse privesc: service hijack, DLL hijack, scheduled task, SeImpersonate.", indicators:{difficulty:6,cognitive_load:5,enumeration_depth:5,rabbit_hole_risk:4,time_pressure:6}, env:{machines:6,networks:2,win:6,lin:0,ad:true,pivot:true}, tags:["service-hijack","dll-hijack","scheduled-task","unquoted-path","SeImpersonate","registry-autorun"], mitre:["TA0001","TA0004","TA0006","TA0008"], pen200:[6,13,16,17,19,24], freq:"medium", order:17 },
+
+  { id:"the-firewall-gauntlet", title:"The Firewall Gauntlet", category:"edge-case", source:"AI-designed", designed_by:"ai-composite", description:"Reverse shells blocked on common ports — must use port 443/53/80 or bind shells.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:3,rabbit_hole_risk:3,time_pressure:4}, env:{machines:3,networks:1,win:2,lin:1,ad:false,pivot:false}, tags:["firewall","bind-shell","port-443","port-53","socat","iptables","windows-firewall"], mitre:["TA0001","TA0004","TA0005"], pen200:[17,18], freq:"medium", order:19 },
+  { id:"the-restricted-shell", title:"The Restricted Shell", category:"edge-case", source:"AI-designed", designed_by:"ai-composite", description:"Every initial shell is restricted (rbash, rvim, Python jail) — must escape before proceeding.", indicators:{difficulty:5,cognitive_load:4,enumeration_depth:2,rabbit_hole_risk:3,time_pressure:4}, env:{machines:3,networks:1,win:1,lin:2,ad:false,pivot:false}, tags:["rbash","rvim","python-jail","shell-escape","pty-spawn","gtfobins"], mitre:["TA0004","TA0005"], pen200:[17,18], freq:"medium", order:19 },
+  { id:"the-patched-box", title:"The Patched Box", category:"edge-case", source:"AI-designed", designed_by:"ai-composite", description:"Obvious CVE exists but is patched — must find the non-obvious second vulnerability.", indicators:{difficulty:7,cognitive_load:6,enumeration_depth:7,rabbit_hole_risk:9,time_pressure:6}, env:{machines:3,networks:1,win:1,lin:2,ad:false,pivot:false}, tags:["patched","second-vuln","thorough-enum","version-check","false-positive"], mitre:["TA0001","TA0004"], pen200:[6,8,13], freq:"medium", order:20 }
+];
+
+let activeCategory = 'all';
+let searchQuery = '';
+
+function renderCards() {
+  const grid = document.getElementById('scenario-grid');
+  const filtered = SCENARIO_MANIFEST.filter(s => {
+    if (activeCategory !== 'all' && s.category !== activeCategory) return false;
+    if (searchQuery) {
+      const haystack = [s.title, s.description, s.source, ...s.tags, ...(s.mitre||[])].join(' ').toLowerCase();
+      return haystack.includes(searchQuery);
+    }
+    return true;
+  }).sort((a,b) => (a.order||99) - (b.order||99));
+
+  grid.innerHTML = filtered.map(s => {
+    const indHtml = (name, val) => {
+      const segs = Array.from({length:10},(_,i) => `<div class="sc-ind-seg${i<val?' filled':''}${i<val&&val>=7?' high':''}"></div>`).join('');
+      return `<div class="sc-ind"><span class="sc-ind-label">${name}</span><div class="sc-ind-bar">${segs}</div></div>`;
+    };
+    return `<a class="scenario-card" href="simulator.html?scenario=${s.id}">
+      <span class="sc-order">#${s.order||''}</span>
+      <div class="sc-category">${s.category.replace(/-/g,' ')}</div>
+      <div class="sc-title">${s.title}</div>
+      <div class="sc-source">${s.source} · ${s.designed_by}</div>
+      <div class="sc-desc">${s.description}</div>
+      <div class="sc-indicators">
+        ${indHtml('Difficulty',s.indicators.difficulty)}
+        ${indHtml('Cog. Load',s.indicators.cognitive_load)}
+        ${indHtml('Enum Depth',s.indicators.enumeration_depth)}
+        ${indHtml('Rabbit Holes',s.indicators.rabbit_hole_risk)}
+        ${indHtml('Time Press.',s.indicators.time_pressure)}
+      </div>
+      <div class="sc-meta-row">
+        ${s.env.machines}M · ${s.env.networks}N · ${s.env.win}W ${s.env.lin}L
+        ${s.env.ad?' · AD':''}${s.env.pivot?' · PIVOT':''}
+        · ${(s.freq||'').toUpperCase()} · PEN-200: ${(s.pen200||[]).map(m=>'M'+m).join(' ')}
+      </div>
+      <div class="sc-tags">${s.tags.slice(0,8).map(t=>`<span class="sc-tag">${t}</span>`).join('')}${s.tags.length>8?`<span class="sc-tag">+${s.tags.length-8}</span>`:''}</div>
+    </a>`;
+  }).join('');
+}
+
+document.getElementById('category-tabs').addEventListener('click', e => {
+  const tab = e.target.closest('.cat-tab');
+  if (!tab) return;
+  document.querySelectorAll('.cat-tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  activeCategory = tab.dataset.cat;
+  renderCards();
+});
+
+document.getElementById('landing-search').addEventListener('input', e => {
+  searchQuery = e.target.value.trim().toLowerCase();
+  renderCards();
+});
+
+renderCards();
+</script>
+</body>
+</html>

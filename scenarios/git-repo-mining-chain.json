@@ -1,0 +1,244 @@
+{
+  "id": "git-repo-mining-chain",
+  "title": "Git Repo Mining Chain",
+  "category": "linux-standalone",
+  "source": ["HTB Dog", "HTB LinkVortex", "OSCP A Crystal"],
+  "designed_by": "ai-composite",
+  "description": "Three Linux standalone machines demonstrating .git exposure exploitation. Dog: git-dumper → settings.php → admin creds → Backdrop module → sudo git apply. LinkVortex: .git exposed → Ghost CMS creds → CVE-2023-40028 arbitrary file read → SSH → symlink race TOCTOU → root. Crystal: .git dump → SSH stuart → zip2john → Joomla config → chloe → sudo ALL → root.",
+
+  "introduction": "Exposed .git directories often contain config files with DB credentials and SSH keys—a fast path to OSCP footholds.",
+  "mental_model": "Treat .git as a credential vault: dump it first, then grep for configs, passwords, and keys before moving to exploits.",
+  "key_principles": [
+    "Always check for /.git on web roots",
+    "settings.php and configuration.php hold DB creds",
+    "zip2john cracks encrypted archives for more creds",
+    "sudo git apply can write arbitrary files as root",
+    "Chain file read with SSH for lateral movement"
+  ],
+
+  "indicators": {
+    "difficulty": 4,
+    "cognitive_load": 4,
+    "enumeration_depth": 4,
+    "rabbit_hole_risk": 3,
+    "time_pressure": 3
+  },
+
+  "mitre": {
+    "tactics": ["TA0001", "TA0003", "TA0004", "TA0006"],
+    "techniques": [
+      {"id": "T1552.001", "name": "Credentials In Files"},
+      {"id": "T1190", "name": "Exploit Public-Facing Application"},
+      {"id": "T1068", "name": "Exploitation for Privilege Escalation"},
+      {"id": "T1087", "name": "Account Discovery"}
+    ]
+  },
+
+  "kill_chain_phases": ["T1-Recon", "T2-Web-Access", "T3-NonWeb-Access", "T4a-Linux-PrivEsc", "T5-Credentials"],
+
+  "environment": {
+    "machine_count": 3,
+    "network_count": 1,
+    "os_distribution": {"windows": 0, "linux": 3},
+    "has_ad": false,
+    "has_pivoting": false,
+    "has_client_side": false
+  },
+
+  "technique_tags": [
+    "git-dumper", "trufflehog", "gitleaks", "CVE-2023-40028", "Ghost-CMS",
+    "Backdrop", "Joomla", "zip2john", "john", "symlink-race", "TOCTOU",
+    "sudo-ALL", "git-apply"
+  ],
+
+  "exam_relevance": {
+    "oscp_exam_format": false,
+    "pen200_modules": [6, 12, 16, 22],
+    "pattern_frequency": "high",
+    "recommended_order": 4
+  },
+
+  "prerequisites": [],
+  "builds_on": [],
+
+  "networks": [
+    {"id": "external", "cidr": "10.10.11.0/24", "label": "External"}
+  ],
+
+  "machines": [
+    {
+      "id": "dog",
+      "label": "DOG",
+      "ip": "10.10.11.58",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (Backdrop CMS)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": "git-dumper → settings.php → admin creds", "leads_to": "cms-admin"},
+            {"type": "rce", "summary": "Backdrop PHP module RCE with admin creds", "leads_to": "www-data"}
+          ],
+          "commands": [
+            {"cmd": "git-dumper http://10.10.11.58/.git ./dog-git", "rationale": "Why: Recover full repo including deleted config files"},
+            {"cmd": "cat dog-git/sites/default/settings.php", "rationale": "Why: settings.php contains DB and admin creds"},
+            "# Login with admin creds, install malicious module"
+          ]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data",
+          "to": "root",
+          "technique": "sudo git apply (arbitrary file write)",
+          "commands": [
+            "sudo -l",
+            {"cmd": "sudo git apply privesc.patch", "rationale": "Why: git apply writes arbitrary files as root"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "admin", "type": "password", "source": "git-dumper → settings.php", "unlocks": ["dog-cms"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "linkvortex",
+      "label": "LINKVORTEX",
+      "ip": "10.10.11.47",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (Ghost CMS)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": ".git exposed → Ghost CMS creds", "leads_to": "ghost-admin"},
+            {"type": "rce", "cve": "CVE-2023-40028", "summary": "Ghost arbitrary file read CVE-2023-40028 (or similar)", "leads_to": "ssh-key"}
+          ],
+          "commands": [
+            "git-dumper http://10.10.11.47/.git ./linkvortex-git",
+            "searchsploit ghost",
+            "# CVE-2023-40028 arbitrary file read → /home/user/.ssh/id_rsa"
+          ]
+        },
+        {
+          "port": 22,
+          "name": "SSH",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SSH with stolen private key", "leads_to": "local-user"}
+          ],
+          "commands": ["ssh -i id_rsa user@10.10.11.47"]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "www-data or user",
+          "to": "root",
+          "technique": "Symlink race TOCTOU",
+          "commands": [
+            "linpeas.sh",
+            "# Find writable binary or cron with race condition",
+            "# Create symlink race for TOCTOU"
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "ghost-admin", "type": "password", "source": ".git dump", "unlocks": ["linkvortex-ghost"]},
+        {"user": "user", "type": "ssh-key", "source": "CVE-2023-40028 file read", "unlocks": ["linkvortex-ssh"]}
+      ],
+      "alternatives": []
+    },
+    {
+      "id": "crystal",
+      "label": "CRYSTAL",
+      "ip": "192.168.50.144",
+      "os": "Linux",
+      "role": "Standalone",
+      "networks": ["external"],
+      "services": [
+        {
+          "port": 80,
+          "name": "HTTP (Joomla)",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "info-disclosure", "summary": ".git dump → config files", "leads_to": "joomla-creds"}
+          ],
+          "commands": [
+            "git-dumper http://192.168.50.144/.git ./crystal-git",
+            "cat crystal-git/configuration.php"
+          ]
+        },
+        {
+          "port": 22,
+          "name": "SSH",
+          "version": "",
+          "vulnerabilities": [
+            {"type": "auth", "summary": "SSH stuart (from .git or enumeration)", "leads_to": "ssh-stuart"}
+          ],
+          "commands":["ssh stuart@192.168.50.144"]
+        }
+      ],
+      "privesc": [
+        {
+          "from": "stuart",
+          "to": "chloe",
+          "technique": "zip2john → crack archive → Joomla config → chloe creds",
+          "commands": [
+            "linpeas.sh",
+            "find / -name *.zip 2>/dev/null",
+            {"cmd": "zip2john backup.zip > backup.hash", "rationale": "Why: Crack archives for config files with creds"},
+            "john backup.hash -w=/usr/share/wordlists/rockyou.txt",
+            "# Extract, find Joomla config with chloe password"
+          ]
+        },
+        {
+          "from": "chloe",
+          "to": "root",
+          "technique": "sudo ALL (no password)",
+          "commands": [
+            "sudo -l",
+            {"cmd": "sudo su", "rationale": "Why: sudo ALL with no password grants root"}
+          ]
+        }
+      ],
+      "credentials": [
+        {"user": "stuart", "type": "password", "source": "enumeration / .git", "unlocks": ["crystal-ssh"]},
+        {"user": "chloe", "type": "password", "source": "zip2john → Joomla config", "unlocks": ["crystal-chloe"]}
+      ],
+      "alternatives": []
+    }
+  ],
+
+  "connections": [],
+
+  "attack_paths": [
+    {
+      "id": "path-dog",
+      "name": "Dog (git-dumper → git apply)",
+      "color": "#6bb8cc",
+      "steps": ["dog"],
+      "description": "git-dumper → settings.php → admin creds → Backdrop module → sudo git apply → root"
+    },
+    {
+      "id": "path-linkvortex",
+      "name": "LinkVortex (Ghost → CVE-2023-40028 → symlink race)",
+      "color": "#e8a87c",
+      "steps": ["linkvortex"],
+      "description": ".git → Ghost creds → CVE-2023-40028 file read → SSH → symlink race TOCTOU → root"
+    },
+    {
+      "id": "path-crystal",
+      "name": "Crystal (.git → zip2john → sudo chloe)",
+      "color": "#85e89d",
+      "steps": ["crystal"],
+      "description": ".git dump → SSH stuart → zip2john → Joomla config → chloe → sudo ALL → root"
+    }
+  ]
+}
